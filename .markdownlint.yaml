@@ -1,0 +1,11 @@
+# markdownlint configuration
+# https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+
+# MD013 – Line length: disabled because code blocks, URLs and table cells
+# cannot always be wrapped without breaking functionality or readability.
+MD013: false
+
+# MD024 – Duplicate headings: allow same heading text under different parents
+# (e.g. "Options" appearing in multiple sub-sections).
+MD024:
+  siblings_only: true

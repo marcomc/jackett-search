@@ -1,0 +1,577 @@
+#!/usr/bin/env python3
+"""
+jackett-search — non-interactive Jackett search with JSON output.
+
+Usage:
+  jackett-search "<query>"
+  jackett-search --limit 10 "<query>"
+  jackett-search --json "<query>"
+  jackett-search --magnets-only "<query>"
+  jackett-search --torrent-only "<query>"
+  jackett-search --timeout 30 "<query>"        # 30 s per indexer
+  jackett-search --timeout 0  "<query>"        # no timeout (wait forever)
+  jackett-search --sort seeders "<query>"              # default
+  jackett-search --sort "seeders,grabs" "<query>"      # multi-key
+  jackett-search --sort "dlf,seeders" "<query>"        # freeleech first
+  jackett-search --sort "size:asc" "<query>"           # smallest first
+  jackett-search --sort "seeders:asc,size:desc" "..."  # explicit dirs
+
+Sort fields — append :asc or :desc to override default direction:
+  seeders   (S)   Active seeders            — default desc  ← best availability
+  leechers  (L)   Leechers / peers          — default desc
+  grabs     (G)   Times grabbed/downloaded  — default desc
+  size            File size                 — default desc
+  published       Indexing date             — default desc (newest first)
+  files     (F)   Number of files           — default desc
+  dlf             Download volume factor    — default asc  (0=freeleech first)
+  ulf             Upload volume factor      — default desc
+  tracker         Tracker name              — default asc
+  title           Torrent title             — default asc
+
+Reads url and api_key from (in priority order):
+  1. ~/.config/jackett-search/config.toml   (XDG / cross-platform primary)
+  2. ~/Library/Application Support/jackett-search/config.toml  (macOS convention)
+  3. ~/Library/Application Support/torrra/config.toml          (legacy fallback)
+"""
+
+import argparse
+import functools
+import json
+import sys
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+VERSION = "0.1.0"
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+
+
+def load_config():
+    candidates = [
+        Path.home() / ".config" / "jackett-search" / "config.toml",
+        Path.home() / "Library" / "Application Support" / "jackett-search" / "config.toml",
+        # Legacy fallback: torrra shares the same format
+        Path.home() / "Library" / "Application Support" / "torrra" / "config.toml",
+    ]
+
+    config_path = next((p for p in candidates if p.exists()), None)
+    url = "http://127.0.0.1:9117"
+    api_key = None
+
+    if config_path is not None:
+        with open(config_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("url") and "=" in line:
+                    url = line.split("=", 1)[1].strip().strip('"')
+                if line.startswith("api_key") and "=" in line:
+                    api_key = line.split("=", 1)[1].strip().strip('"')
+
+    if not api_key:
+        cfg_hint = str(candidates[0])
+        print(
+            f"Error: api_key not found. Create {cfg_hint} with:\n"
+            '  url     = "http://127.0.0.1:9117"\n'
+            '  api_key = "<your-jackett-api-key>"',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    return url, api_key
+
+
+# ── Sort ────────────────────────────────────────────────────────────────────────
+
+# Maps CLI alias → (Jackett JSON field, default_direction)
+# default_direction: "desc" puts the highest/best value first
+SORT_FIELDS = {
+    "seeders": ("Seeders", "desc"),
+    "s": ("Seeders", "desc"),
+    "leechers": ("Peers", "desc"),
+    "peers": ("Peers", "desc"),
+    "l": ("Peers", "desc"),
+    "grabs": ("Grabs", "desc"),
+    "g": ("Grabs", "desc"),
+    "size": ("Size", "desc"),
+    "published": ("PublishDate", "desc"),
+    "date": ("PublishDate", "desc"),
+    "files": ("Files", "desc"),
+    "f": ("Files", "desc"),
+    "dlf": ("DownloadVolumeFactor", "asc"),  # 0 = freeleech = best
+    "ulf": ("UploadVolumeFactor", "desc"),
+    "tracker": ("Tracker", "asc"),
+    "title": ("Title", "asc"),
+    "name": ("Title", "asc"),
+}
+
+# Fields whose values are strings (everything else is numeric)
+STRING_FIELDS = {"Tracker", "Title", "PublishDate", "CategoryDesc"}
+
+DEFAULT_SORT = "seeders"  # best availability indicator
+
+
+def parse_sort_spec(sort_str):
+    """
+    Parse a comma-separated sort string into a list of (json_field, direction).
+
+    Each token is  fieldname  or  fieldname:asc  or  fieldname:desc.
+    When no direction is given the field's default direction is used.
+
+    e.g. "seeders,size:asc,dlf" →
+         [("Seeders","desc"), ("Size","asc"), ("DownloadVolumeFactor","asc")]
+    """
+    specs = []
+    for token in sort_str.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        # split optional :asc / :desc suffix
+        if ":" in token:
+            alias, explicit_dir = token.rsplit(":", 1)
+            alias = alias.lower()
+            explicit_dir = explicit_dir.lower()
+            if explicit_dir not in ("asc", "desc"):
+                print(
+                    f"Warning: unknown direction ':{explicit_dir}' for '{alias}', "
+                    "use :asc or :desc. Using default.",
+                    file=sys.stderr,
+                )
+                explicit_dir = None
+        else:
+            alias = token.lower()
+            explicit_dir = None
+
+        if alias not in SORT_FIELDS:
+            print(
+                f"Warning: unknown sort field '{alias}', skipping. "
+                f"Valid fields: {', '.join(sorted(set(SORT_FIELDS)))}",
+                file=sys.stderr,
+            )
+            continue
+
+        json_field, default_dir = SORT_FIELDS[alias]
+        direction = explicit_dir if explicit_dir else default_dir
+        specs.append((json_field, direction))
+    return specs or parse_sort_spec(DEFAULT_SORT)
+
+
+def make_comparator(specs):
+    """Return a cmp function for use with functools.cmp_to_key."""
+
+    def cmp(a, b):
+        for field, direction in specs:
+            va = a.get(field)
+            vb = b.get(field)
+
+            # None always goes to the end regardless of direction
+            if va is None and vb is None:
+                continue
+            if va is None:
+                return 1
+            if vb is None:
+                return -1
+
+            if field in STRING_FIELDS:
+                result = (va > vb) - (va < vb)  # -1, 0, or 1
+            else:
+                result = (va > vb) - (va < vb)
+
+            if direction == "desc":
+                result = -result
+            if result != 0:
+                return result
+        return 0
+
+    return functools.cmp_to_key(cmp)
+
+
+def sort_results(results, sort_str):
+    specs = parse_sort_spec(sort_str)
+    return sorted(results, key=make_comparator(specs))
+
+
+# ── Search ──────────────────────────────────────────────────────────────────────
+
+DEFAULT_TIMEOUT = 10  # seconds per indexer; 0 = wait forever
+
+
+def get_indexer_ids(url, api_key):
+    """Return list of configured indexer IDs from Jackett."""
+    params = urllib.parse.urlencode({"t": "indexers", "configured": "true", "apikey": api_key})
+    endpoint = f"{url}/api/v2.0/indexers/all/results/torznab/api?{params}"
+    try:
+        with urllib.request.urlopen(endpoint, timeout=10) as resp:
+            import xml.etree.ElementTree as ET
+
+            root = ET.fromstring(resp.read())
+            return [el.get("id") for el in root.findall("indexer")]
+    except Exception:
+        return []
+
+
+def query_indexer(url, api_key, indexer_id, query, timeout):
+    """Query a single indexer; return its results list (may be empty on error)."""
+    params = urllib.parse.urlencode({"apikey": api_key, "Query": query})
+    endpoint = f"{url}/api/v2.0/indexers/{indexer_id}/results?{params}"
+    sock_timeout = timeout if timeout > 0 else None  # None = wait forever
+    try:
+        with urllib.request.urlopen(endpoint, timeout=sock_timeout) as resp:
+            data = json.loads(resp.read())
+            return data.get("Results", [])
+    except Exception:
+        return []
+
+
+def search(
+    query,
+    url,
+    api_key,
+    limit=None,
+    magnets_only=False,
+    torrent_only=False,
+    timeout=DEFAULT_TIMEOUT,
+    sort=DEFAULT_SORT,
+):
+
+    indexer_ids = get_indexer_ids(url, api_key)
+    if not indexer_ids:
+        print(
+            "Warning: could not fetch indexer list; falling back to /all",
+            file=sys.stderr,
+        )
+        indexer_ids = ["all"]
+
+    timeout_label = f"{timeout}s" if timeout > 0 else "∞ (no timeout)"
+    print(
+        f"Searching {len(indexer_ids)} indexers (timeout {timeout_label} each)…",
+        file=sys.stderr,
+    )
+
+    all_results = []
+    with ThreadPoolExecutor(max_workers=len(indexer_ids)) as pool:
+        futures = {
+            pool.submit(query_indexer, url, api_key, iid, query, timeout): iid
+            for iid in indexer_ids
+        }
+        for future in as_completed(futures):
+            all_results.extend(future.result())
+
+    # ── filter ──
+    if magnets_only:
+        all_results = [r for r in all_results if r.get("MagnetUri")]
+    elif torrent_only:
+        all_results = [r for r in all_results if r.get("Link")]
+
+    # ── sort ──
+    all_results = sort_results(all_results, sort)
+
+    if limit:
+        all_results = all_results[:limit]
+
+    return all_results
+
+
+# ── Format ──────────────────────────────────────────────────────────────────────
+
+
+def format_size(n):
+    if n is None:
+        return "?"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+# ── ANSI / OSC 8 helpers (only emitted when stdout is a real TTY) ─────────────
+
+_IS_TTY = sys.stdout.isatty()
+
+# colours
+_R = "\033[0m"  # reset
+_B = "\033[1m"  # bold
+_DIM = "\033[2m"
+_G = "\033[32m"  # green
+_Y = "\033[33m"  # yellow
+_RE = "\033[31m"  # red
+_CY = "\033[36m"  # cyan
+
+
+def ansi(code, text):
+    """Wrap text in an ANSI escape — no-op when not a TTY."""
+    return f"{code}{text}{_R}" if _IS_TTY else text
+
+
+def link(url, label):
+    """
+    OSC 8 terminal hyperlink.  Clicking 'label' in the terminal opens 'url'.
+    Supported by iTerm2, Terminal.app (macOS 12+), kitty, WezTerm, etc.
+    Falls back to plain label when not a TTY.
+    """
+    if not _IS_TTY or not url:
+        return label
+    return f"\033]8;;{url}\033\\{label}\033]8;;\033\\"
+
+
+def colour_seeds(n, width=0):
+    """
+    Colour-code seeder count: green ≥100, yellow ≥10, red <10.
+    Pads to 'width' BEFORE applying colour so that format specs on the
+    returned string don't fight invisible ANSI bytes.
+    """
+    padded = f"{n:>{width}}" if width else str(n)
+    if not _IS_TTY:
+        return padded
+    if n >= 100:
+        return ansi(_G + _B, padded)
+    if n >= 10:
+        return ansi(_Y, padded)
+    return ansi(_RE + _DIM, padded)
+
+
+def colour_dlf(dlf, width=0):
+    """
+    Show 0.0 as FREE in green; other values plain.
+    Same pre-padding trick as colour_seeds.
+    """
+    if dlf is None:
+        raw = "?"
+        code = _DIM
+    elif dlf == 0.0:
+        raw = "FREE"
+        code = _G + _B
+    else:
+        raw = f"{dlf:.1f}"
+        code = ""
+    padded = f"{raw:>{width}}" if width else raw
+    return ansi(code, padded) if _IS_TTY and code else padded
+
+
+def dim(text, width=0):
+    """Dim a string, optionally right-justified to width first."""
+    padded = f"{text:>{width}}" if width else str(text)
+    return ansi(_DIM, padded) if _IS_TTY else padded
+
+
+def print_table(results):
+    if not results:
+        print("No results found.")
+        return
+
+    # Column widths for visible text (ANSI chars are invisible, so pad first)
+    W_TITLE = 52
+    W_SIZE = 10
+    W_SEEDS = 6
+    W_LEECH = 5
+    W_GRABS = 6
+    W_DLF = 5
+    W_TRACKER = 20
+
+    # Pre-pad each label, then bold — keeps padding inside the escape sequence
+    h = {
+        "num": ansi(_B, f"{'#':<4}"),
+        "title": ansi(_B, f"{'Title':<{W_TITLE}}"),
+        "size": ansi(_B, f"{'Size':>{W_SIZE}}"),
+        "s": ansi(_B, f"{'S':>{W_SEEDS}}"),
+        "l": ansi(_B, f"{'L':>{W_LEECH}}"),
+        "g": ansi(_B, f"{'G':>{W_GRABS}}"),
+        "dlf": ansi(_B, f"{'DLF':>{W_DLF}}"),
+        "tracker": ansi(_B, f"{'Tracker':<{W_TRACKER}}"),
+        "dl": ansi(_B, "DL"),
+    }
+    header = (
+        f"\n{h['num']} {h['title']} {h['size']}  "
+        f"{h['s']}{h['l']}{h['g']}  "
+        f"{h['dlf']}  {h['tracker']}  {h['dl']}"
+    )
+    # The ANSI codes in the header inflate its len() — just print the separator
+    # at a fixed width rather than trying to match it character for character.
+    print(header)
+    print(ansi(_DIM, "─" * 130))
+
+    for i, r in enumerate(results, 1):
+        raw_title = (r.get("Title") or "")[: W_TITLE - 2]
+        details = r.get("Details")
+        mag_uri = r.get("MagnetUri")
+        tor_link = r.get("Link")
+
+        # ── title cell: pad visible text first, THEN wrap in hyperlink ──────
+        padded_title = f"{raw_title:<{W_TITLE}}"
+        title_cell = link(details, padded_title) if details else padded_title
+
+        # ── numeric cells ────────────────────────────────────────────────────
+        size = format_size(r.get("Size"))
+        seeds = r.get("Seeders") or 0
+        leeches = r.get("Peers") or 0
+        grabs = r.get("Grabs") or 0
+        dlf = r.get("DownloadVolumeFactor")
+        tracker = (r.get("Tracker") or "")[:W_TRACKER]
+
+        # Pre-pad then colour — keeps column alignment intact with ANSI bytes
+        seeds_str = colour_seeds(seeds, W_SEEDS)
+        leeches_str = dim(leeches, W_LEECH)
+        grabs_str = dim(grabs, W_GRABS)
+        dlf_str = colour_dlf(dlf, W_DLF)
+        size_str = f"{size:>{W_SIZE}}"
+        tracker_str = f"{tracker:<{W_TRACKER}}"
+
+        # ── DL cell: clickable links (label pre-set, no width needed) ────────
+        dl_parts = []
+        if mag_uri:
+            dl_parts.append(link(mag_uri, ansi(_CY, "🧲 magnet")))
+        if tor_link:
+            dl_parts.append(link(tor_link, ansi(_Y, "📄 torrent")))
+        if not dl_parts:
+            dl_parts.append(dim("✗"))
+        dl_cell = "  ".join(dl_parts)
+
+        # ── row: all coloured values already carry their own padding ─────────
+        print(
+            f"{i:<4} "
+            f"{title_cell} "
+            f"{size_str}  "
+            f"{seeds_str}"
+            f"{leeches_str}"
+            f"{grabs_str}  "
+            f"{dlf_str}  "
+            f"{tracker_str}  "
+            f"{dl_cell}"
+        )
+
+    print(f"\n{ansi(_DIM, str(len(results)) + ' result(s).')}\n")
+
+
+def print_json(results):
+    out = []
+    for r in results:
+        out.append(
+            {
+                "title": r.get("Title"),
+                "tracker": r.get("Tracker"),
+                "size_bytes": r.get("Size"),
+                "size": format_size(r.get("Size")),
+                "seeders": r.get("Seeders"),
+                "leechers": r.get("Peers"),
+                "grabs": r.get("Grabs"),
+                "files": r.get("Files"),
+                "download_volume_factor": r.get("DownloadVolumeFactor"),
+                "upload_volume_factor": r.get("UploadVolumeFactor"),
+                "magnet_uri": r.get("MagnetUri"),
+                "info_hash": r.get("InfoHash"),
+                "link": r.get("Link"),
+                "details": r.get("Details"),
+                "category": r.get("CategoryDesc"),
+                "published": r.get("PublishDate"),
+            }
+        )
+    print(json.dumps(out, indent=2))
+
+
+# ── Main ────────────────────────────────────────────────────────────────────────
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Search Jackett and print results or magnet links.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Sort field aliases (prefix with - to flip direction):
+  seeders / s     Active seeders            (default: desc) ← best availability
+  leechers / l    Leechers                  (default: desc)
+  grabs / g       Times grabbed             (default: desc)
+  size            File size                 (default: desc)
+  published       Date indexed              (default: desc, newest first)
+  files / f       Number of files           (default: desc)
+  dlf             Download volume factor    (default: asc,  0=freeleech first)
+  ulf             Upload volume factor      (default: desc)
+  tracker         Tracker name              (default: asc)
+  title / name    Torrent title             (default: asc)
+
+Examples:
+  jackett-search --sort "dlf,seeders" "..."        freeleech first, then most seeded
+  jackett-search --sort "size:asc" "..."           smallest first
+  jackett-search --sort "published" "..."          newest first
+  jackett-search --sort "seeders:asc,size" "..."   least seeded first, then largest
+        """,
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    parser.add_argument("query", help="Search query")
+    parser.add_argument(
+        "--json", dest="as_json", action="store_true", help="Output results as JSON"
+    )
+
+    link_group = parser.add_mutually_exclusive_group()
+    link_group.add_argument(
+        "--magnets-only",
+        action="store_true",
+        help="Only show results that have a magnet URI",
+    )
+    link_group.add_argument(
+        "--torrent-only",
+        action="store_true",
+        help="Only show results that have a .torrent download link",
+    )
+
+    parser.add_argument("--limit", type=int, default=None, help="Max number of results to show")
+    parser.add_argument(
+        "--magnet",
+        type=int,
+        metavar="N",
+        help="Print magnet URI for result number N (1-based)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_TIMEOUT,
+        metavar="SECS",
+        help=f"Per-indexer timeout in seconds (default: {DEFAULT_TIMEOUT}). "
+        "Use 0 to wait for every indexer to finish (no early cut-off). "
+        "Slow or dead indexers may still stall indefinitely at 0.",
+    )
+    parser.add_argument(
+        "--sort",
+        type=str,
+        default=DEFAULT_SORT,
+        metavar="FIELDS",
+        help=f"Comma-separated sort fields (default: {DEFAULT_SORT}). "
+        "Prefix a field with - to flip its direction. "
+        "See below for valid field names.",
+    )
+    args = parser.parse_args()
+
+    url, api_key = load_config()
+    results = search(
+        args.query,
+        url,
+        api_key,
+        limit=args.limit,
+        magnets_only=args.magnets_only,
+        torrent_only=args.torrent_only,
+        timeout=args.timeout,
+        sort=args.sort,
+    )
+
+    if args.magnet:
+        idx = args.magnet - 1
+        if idx < 0 or idx >= len(results):
+            print(f"Error: result #{args.magnet} does not exist.", file=sys.stderr)
+            sys.exit(1)
+        r = results[idx]
+        magnet = r.get("MagnetUri")
+        if not magnet:
+            print(f"Error: result #{args.magnet} has no magnet URI.", file=sys.stderr)
+            sys.exit(1)
+        print(magnet)
+        return
+
+    if args.as_json:
+        print_json(results)
+    else:
+        print_table(results)
+
+
+if __name__ == "__main__":
+    main()
