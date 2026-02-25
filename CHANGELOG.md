@@ -48,11 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   convention), or `~/Library/Application Support/torrra/config.toml`
   (legacy fallback for existing torrra users). No torrra installation
   required.
+- **`--version`** flag — print the script version and exit.
 - **Makefile** with `help`, `install`, `uninstall`, `lint`, `lint-py`,
   `lint-md`, and `dev-deps` targets.
+- **GitHub Actions CI** — `.github/workflows/lint.yml` runs `make lint`
+  on every push and pull request.
+- **`pyproject.toml`** — project metadata and ruff configuration.
 - **AGENTS.md** with contributor and AI-agent coding guidelines.
 - **`.markdownlint.yaml`** project-wide markdownlint configuration.
-- **`--version`** flag — print the script version and exit.
 - **`.gitignore`** covering Python artefacts, macOS metadata, and local
   config files that may contain API keys.
 
