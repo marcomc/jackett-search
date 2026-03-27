@@ -5,7 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-03-10
+
+### Added
+
+- Bundled `flaresolverr-compose.yml` for running FlareSolverr with Docker
+  Compose and Docker restart policy `unless-stopped`.
+- Bundled `jackett-compose.yml` for running Jackett with Docker Compose and
+  Docker restart policy `unless-stopped`.
+- `make install-flaresolverr` to install the bundled Compose file into
+  `~/.config/jackett-search/`, print the manual start command, and start the
+  container automatically when Docker is already running.
+- `make install-jackett` to install the bundled Jackett Compose file, migrate
+  an existing native Jackett config on first install, pull the latest Jackett
+  image, and start the container automatically when Docker is already running.
+
+### Changed
+
+- `make install` now detects whether the FlareSolverr Compose file is already
+  installed and, in interactive use, offers to install it by delegating to
+  `make install-flaresolverr`.
+- `make install` now also detects whether the Jackett Compose file is already
+  installed and, in interactive use, offers to install it by delegating to
+  `make install-jackett`.
+- `make install-jackett` now rewrites migrated Jackett configs to bind Docker
+  Jackett to `0.0.0.0` instead of container-local `127.0.0.1`, and avoids an
+  invalid empty bind value. This fixes both the empty-response failure where
+  the published WebUI and API port were unreachable from the host and the
+  startup crash `Invalid url: 'http://:9117/'`.
+- Bundled Jackett and FlareSolverr Compose files now use distinct Compose
+  project names, avoiding orphan-container warnings when managing one service
+  independently of the other.
+- Installers now remove legacy fixed-name Docker containers from earlier repo
+  revisions before starting the Compose-managed services, and they fail fast if
+  `docker compose pull`, `up`, or `restart` fails.
 
 ## [0.1.0] - 2026-02-25
 

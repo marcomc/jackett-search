@@ -1,0 +1,16 @@
+name: jackett-search-jackett
+
+services:
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-UTC}
+      AUTO_UPDATE: "true"
+    volumes:
+      - ${JACKETT_CONFIG_DIR:-~/.config/jackett-search/jackett-config}:/config
+      - ${JACKETT_DOWNLOADS_DIR:-~/.config/jackett-search/jackett-downloads}:/downloads
+    ports:
+      - "127.0.0.1:9117:9117"
+    restart: unless-stopped
