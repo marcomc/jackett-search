@@ -74,7 +74,14 @@ install-flaresolverr: ## Install FlareSolverr Docker Compose file in $(CONFIG_DI
 	@echo "  Manual start command:"
 	@echo "    $(FLARESOLVERR_START_CMD)"
 	@if docker info >/dev/null 2>&1; then \
-		$(FLARESOLVERR_START_CMD); \
+		if docker inspect flaresolverr >/dev/null 2>&1; then \
+			image=$$(docker inspect -f '{{.Config.Image}}' flaresolverr 2>/dev/null || true); \
+			if [ "$$image" = "ghcr.io/flaresolverr/flaresolverr:latest" ]; then \
+				docker rm -f flaresolverr >/dev/null; \
+				echo "✓ Removed legacy FlareSolverr container to migrate to the Compose-managed service"; \
+			fi; \
+		fi; \
+		$(FLARESOLVERR_START_CMD) || exit 1; \
 		echo "✓ FlareSolverr started"; \
 	else \
 		echo "Docker service is not running."; \
@@ -108,13 +115,25 @@ install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
 		find "$(JACKETT_DATA_DIR)" -maxdepth 1 -type f -name 'log.txt*' -exec cp {} "$(JACKETT_APP_DIR)" \; ; \
 		echo "✓ Synced legacy Docker Jackett config into $(JACKETT_APP_DIR)"; \
 	fi
+	@if [ -f "$(JACKETT_SERVER_CONFIG)" ]; then \
+		JACKETT_SERVER_CONFIG="$(JACKETT_SERVER_CONFIG)" python3 -c 'import json, os, pathlib; path = pathlib.Path(os.environ["JACKETT_SERVER_CONFIG"]); data = json.loads(path.read_text()); data["FlareSolverrUrl"] = "http://host.docker.internal:8191"; data["LocalBindAddress"] = "0.0.0.0"; path.write_text(json.dumps(data, indent=2) + "\n")'; \
+		echo "✓ Set Docker Jackett FlareSolverr URL → http://host.docker.internal:8191"; \
+		echo "✓ Set Docker Jackett bind address → 0.0.0.0"; \
+	fi
 	@echo "✓ Installed Jackett compose file → $(JACKETT_COMPOSE_DST)"
 	@echo "  Manual start command:"
 	@echo "    $(DOCKER_JACKETT_ENV) $(JACKETT_START_CMD)"
 	@if docker info >/dev/null 2>&1; then \
 		echo "Pulling latest Jackett image..."; \
-		$(DOCKER_JACKETT_ENV) docker compose -f "$(JACKETT_COMPOSE_DST)" pull jackett; \
-		$(DOCKER_JACKETT_ENV) $(JACKETT_START_CMD); \
+		if docker inspect jackett >/dev/null 2>&1; then \
+			image=$$(docker inspect -f '{{.Config.Image}}' jackett 2>/dev/null || true); \
+			if [ "$$image" = "lscr.io/linuxserver/jackett:latest" ]; then \
+				docker rm -f jackett >/dev/null; \
+				echo "✓ Removed legacy Jackett container to migrate to the Compose-managed service"; \
+			fi; \
+		fi; \
+		$(DOCKER_JACKETT_ENV) docker compose -f "$(JACKETT_COMPOSE_DST)" pull jackett || exit 1; \
+		$(DOCKER_JACKETT_ENV) $(JACKETT_START_CMD) || exit 1; \
 		if [ ! -f "$(JACKETT_SERVER_CONFIG)" ]; then \
 			echo "Waiting for Jackett to create $(JACKETT_SERVER_CONFIG)..."; \
 			for _ in 1 2 3 4 5 6 7 8 9 10; do \
@@ -126,7 +145,7 @@ install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
 			JACKETT_SERVER_CONFIG="$(JACKETT_SERVER_CONFIG)" python3 -c 'import json, os, pathlib; path = pathlib.Path(os.environ["JACKETT_SERVER_CONFIG"]); data = json.loads(path.read_text()); data["FlareSolverrUrl"] = "http://host.docker.internal:8191"; data["LocalBindAddress"] = "0.0.0.0"; path.write_text(json.dumps(data, indent=2) + "\n")'; \
 			echo "✓ Set Docker Jackett FlareSolverr URL → http://host.docker.internal:8191"; \
 			echo "✓ Set Docker Jackett bind address → 0.0.0.0"; \
-			$(DOCKER_JACKETT_ENV) docker compose -f "$(JACKETT_COMPOSE_DST)" restart jackett >/dev/null; \
+			$(DOCKER_JACKETT_ENV) docker compose -f "$(JACKETT_COMPOSE_DST)" restart jackett >/dev/null || exit 1; \
 		else \
 			echo "✗ Jackett did not create $(JACKETT_SERVER_CONFIG)"; \
 			exit 1; \

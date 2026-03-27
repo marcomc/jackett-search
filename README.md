@@ -135,6 +135,11 @@ docker compose -f ~/.config/jackett-search/flaresolverr-compose.yml up -d
 
 The bundled FlareSolverr service uses Docker's `unless-stopped` restart policy,
 so once Docker Desktop is running again it will come back automatically.
+The bundled Compose files also use distinct Compose project names, so managing
+Jackett does not produce orphan-container warnings for FlareSolverr and vice versa.
+If you previously used an older revision of this repo that created plain
+`jackett` or `flaresolverr` containers, the installers remove those legacy
+containers before starting the Compose-managed services.
 
 Or manually:
 

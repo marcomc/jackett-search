@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-03-10
 
 ### Added
 
@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invalid empty bind value. This fixes both the empty-response failure where
   the published WebUI and API port were unreachable from the host and the
   startup crash `Invalid url: 'http://:9117/'`.
+- Bundled Jackett and FlareSolverr Compose files now use distinct Compose
+  project names, avoiding orphan-container warnings when managing one service
+  independently of the other.
+- Installers now remove legacy fixed-name Docker containers from earlier repo
+  revisions before starting the Compose-managed services, and they fail fast if
+  `docker compose pull`, `up`, or `restart` fails.
 
 ## [0.1.0] - 2026-02-25
 
