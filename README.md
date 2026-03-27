@@ -4,6 +4,17 @@ A fast, non-interactive CLI tool that queries a local [Jackett](https://github.c
 instance and prints torrent search results to stdout — with colour, clickable
 links, flexible sorting, and JSON output for scripting and AI agents.
 
+## Table of Contents
+
+- [Why](#why)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Usage](#usage)
+- [JSON output fields](#json-output-fields)
+- [Using with an AI agent](#using-with-an-ai-agent)
+- [How it works](#how-it-works)
+- [Notes](#notes)
+
 ## Why
 
 [torrra](https://torrra.readthedocs.io) is a great TUI torrent client, but it
@@ -17,6 +28,7 @@ API. `jackett-search` does exactly that.
 | --- | --- | --- |
 | Python | 3.8+ | `brew install python` |
 | Jackett | any | `brew install jackett` |
+| Docker Desktop | current | `brew install --cask docker` |
 
 No external Python packages are required — the script uses the standard library only.
 
@@ -65,6 +77,37 @@ git clone https://github.com/marcomc/jackett-search.git
 cd jackett-search
 make install
 ```
+
+During `make install`, `jackett-search` now checks whether a FlareSolverr
+Compose file is already present in `~/.config/jackett-search/`. If not, the
+installer asks whether it should install one for you. If you answer yes, it
+runs `make install-flaresolverr`, which:
+
+- installs `flaresolverr-compose.yml` into `~/.config/jackett-search/`
+- prints the manual start command
+- starts FlareSolverr immediately when Docker is already running
+- otherwise tells you to start Docker Desktop first and rerun the printed command
+
+You can run the FlareSolverr setup directly at any time:
+
+```sh
+make install-flaresolverr
+```
+
+That installs this Compose file:
+
+```text
+~/.config/jackett-search/flaresolverr-compose.yml
+```
+
+and starts it with:
+
+```sh
+docker compose -f ~/.config/jackett-search/flaresolverr-compose.yml up -d
+```
+
+The bundled FlareSolverr service uses Docker's `unless-stopped` restart policy,
+so once Docker Desktop is running again it will come back automatically.
 
 Or manually:
 

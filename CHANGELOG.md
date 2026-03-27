@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Bundled `flaresolverr-compose.yml` for running FlareSolverr with Docker
+  Compose and Docker restart policy `unless-stopped`.
+- `make install-flaresolverr` to install the bundled Compose file into
+  `~/.config/jackett-search/`, print the manual start command, and start the
+  container automatically when Docker is already running.
+
+### Changed
+
+- `make install` now detects whether the FlareSolverr Compose file is already
+  installed and, in interactive use, offers to install it by delegating to
+  `make install-flaresolverr`.
+
 ## [0.1.0] - 2026-02-25
 
 ### Added
