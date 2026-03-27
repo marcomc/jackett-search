@@ -5,10 +5,21 @@ CONFIG_DIR := $(HOME)/.config/jackett-search
 FLARESOLVERR_COMPOSE_SRC := $(CURDIR)/flaresolverr-compose.yml
 FLARESOLVERR_COMPOSE_DST := $(CONFIG_DIR)/flaresolverr-compose.yml
 FLARESOLVERR_START_CMD := docker compose -f "$(FLARESOLVERR_COMPOSE_DST)" up -d
+JACKETT_COMPOSE_SRC := $(CURDIR)/jackett-compose.yml
+JACKETT_COMPOSE_DST := $(CONFIG_DIR)/jackett-compose.yml
+JACKETT_DATA_DIR := $(CONFIG_DIR)/jackett-config
+JACKETT_APP_DIR := $(JACKETT_DATA_DIR)/Jackett
+JACKETT_DOWNLOADS_DIR := $(CONFIG_DIR)/jackett-downloads
+JACKETT_NATIVE_CONFIG_DIR := $(HOME)/Library/Application Support/Jackett
+JACKETT_SERVER_CONFIG := $(JACKETT_APP_DIR)/ServerConfig.json
+JACKETT_START_CMD := docker compose -f "$(JACKETT_COMPOSE_DST)" up -d
+USER_ID := $(shell id -u)
+GROUP_ID := $(shell id -g)
+TIMEZONE := $(or $(TZ),UTC)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-flaresolverr uninstall lint lint-py lint-md dev-deps
+.PHONY: help install install-flaresolverr install-jackett uninstall lint lint-py lint-md dev-deps
 
 help: ## Show available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -37,6 +48,19 @@ install: ## Install jackett-search to $(INSTALL_DIR) (requires Python 3.8+)
 		echo "FlareSolverr compose file not installed."; \
 		echo "Run 'make install-flaresolverr' later to install it."; \
 	fi
+	@if [ -f "$(JACKETT_COMPOSE_DST)" ]; then \
+		echo "✓ Jackett compose file already installed → $(JACKETT_COMPOSE_DST)"; \
+	elif [ -t 0 ]; then \
+		printf "Install Jackett Docker Compose file in $(CONFIG_DIR)? [y/N] "; \
+		read -r answer; \
+		case "$$answer" in \
+			[yY]|[yY][eE][sS]) $(MAKE) install-jackett ;; \
+			*) echo "Skipped Jackett Docker install."; ;; \
+		esac; \
+	else \
+		echo "Jackett compose file not installed."; \
+		echo "Run 'make install-jackett' later to install it."; \
+	fi
 
 install-flaresolverr: ## Install FlareSolverr Docker Compose file in $(CONFIG_DIR)
 	@command -v docker >/dev/null 2>&1 \
@@ -55,6 +79,50 @@ install-flaresolverr: ## Install FlareSolverr Docker Compose file in $(CONFIG_DI
 		echo "Docker service is not running."; \
 		echo "Start Docker Desktop first, then run:"; \
 		echo "  $(FLARESOLVERR_START_CMD)"; \
+	fi
+
+install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
+	@command -v docker >/dev/null 2>&1 \
+		|| { echo "✗ docker not found — install Docker Desktop first"; exit 1; }
+	@docker compose version >/dev/null 2>&1 \
+		|| { echo "✗ docker compose not available — update Docker Desktop first"; exit 1; }
+	@mkdir -p "$(CONFIG_DIR)" "$(JACKETT_DATA_DIR)" "$(JACKETT_APP_DIR)" "$(JACKETT_DOWNLOADS_DIR)"
+	@cp "$(JACKETT_COMPOSE_SRC)" "$(JACKETT_COMPOSE_DST)"
+	@if [ ! -f "$(JACKETT_SERVER_CONFIG)" ] && [ -d "$(JACKETT_NATIVE_CONFIG_DIR)" ]; then \
+		for item in DataProtection Indexers ServerConfig.json; do \
+			if [ -e "$(JACKETT_NATIVE_CONFIG_DIR)/$$item" ]; then \
+				cp -R "$(JACKETT_NATIVE_CONFIG_DIR)/$$item" "$(JACKETT_APP_DIR)"; \
+			fi; \
+		done; \
+		find "$(JACKETT_NATIVE_CONFIG_DIR)" -maxdepth 1 -type f -name 'log.txt*' -exec cp {} "$(JACKETT_APP_DIR)" \; ; \
+		echo "✓ Migrated existing Jackett config from $(JACKETT_NATIVE_CONFIG_DIR)"; \
+	fi
+	@if [ -f "$(JACKETT_DATA_DIR)/ServerConfig.json" ]; then \
+		for item in DataProtection Indexers ServerConfig.json; do \
+			if [ -e "$(JACKETT_DATA_DIR)/$$item" ]; then \
+				rm -rf "$(JACKETT_APP_DIR)/$$item"; \
+				cp -R "$(JACKETT_DATA_DIR)/$$item" "$(JACKETT_APP_DIR)"; \
+			fi; \
+		done; \
+		find "$(JACKETT_DATA_DIR)" -maxdepth 1 -type f -name 'log.txt*' -exec cp {} "$(JACKETT_APP_DIR)" \; ; \
+		echo "✓ Synced legacy Docker Jackett config into $(JACKETT_APP_DIR)"; \
+	fi
+	@if [ -f "$(JACKETT_SERVER_CONFIG)" ]; then \
+		python3 -c 'import json, pathlib; path = pathlib.Path("$(JACKETT_SERVER_CONFIG)"); data = json.loads(path.read_text()); data["FlareSolverrUrl"] = "http://host.docker.internal:8191"; path.write_text(json.dumps(data, indent=2) + "\n")'; \
+		echo "✓ Set Docker Jackett FlareSolverr URL → http://host.docker.internal:8191"; \
+	fi
+	@echo "✓ Installed Jackett compose file → $(JACKETT_COMPOSE_DST)"
+	@echo "  Manual start command:"
+	@echo "    PUID=$(USER_ID) PGID=$(GROUP_ID) TZ=$(TIMEZONE) JACKETT_CONFIG_DIR=$(JACKETT_DATA_DIR) JACKETT_DOWNLOADS_DIR=$(JACKETT_DOWNLOADS_DIR) $(JACKETT_START_CMD)"
+	@if docker info >/dev/null 2>&1; then \
+		echo "Pulling latest Jackett image..."; \
+		PUID=$(USER_ID) PGID=$(GROUP_ID) TZ=$(TIMEZONE) JACKETT_CONFIG_DIR="$(JACKETT_DATA_DIR)" JACKETT_DOWNLOADS_DIR="$(JACKETT_DOWNLOADS_DIR)" docker compose -f "$(JACKETT_COMPOSE_DST)" pull jackett; \
+		PUID=$(USER_ID) PGID=$(GROUP_ID) TZ=$(TIMEZONE) JACKETT_CONFIG_DIR="$(JACKETT_DATA_DIR)" JACKETT_DOWNLOADS_DIR="$(JACKETT_DOWNLOADS_DIR)" $(JACKETT_START_CMD); \
+		echo "✓ Jackett started"; \
+	else \
+		echo "Docker service is not running."; \
+		echo "Start Docker Desktop first, then run:"; \
+		echo "  PUID=$(USER_ID) PGID=$(GROUP_ID) TZ=$(TIMEZONE) JACKETT_CONFIG_DIR=$(JACKETT_DATA_DIR) JACKETT_DOWNLOADS_DIR=$(JACKETT_DOWNLOADS_DIR) $(JACKETT_START_CMD)"; \
 	fi
 
 uninstall: ## Remove jackett-search from $(INSTALL_DIR)
