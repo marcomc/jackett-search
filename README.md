@@ -109,6 +109,7 @@ The Jackett installer:
 - creates persistent Docker config/download directories under `~/.config/jackett-search/`
 - copies an existing native macOS Jackett config into the Docker config directory the first time, if found
 - rewrites Jackett's FlareSolverr URL to `http://host.docker.internal:8191` so Docker Jackett can reach the host-published FlareSolverr service
+- rewrites Jackett's bind address to `0.0.0.0` so the Docker-published port is reachable from the host
 - pulls the latest Jackett image before starting it
 - prints the manual start command with the required environment variables
 - starts Jackett immediately when Docker is already running
@@ -231,6 +232,14 @@ On first install, if a native macOS Jackett config already exists at
 `~/Library/Application Support/Jackett`, the installer copies it into the
 Docker config directory so your existing API key, indexers, and settings come
 across.
+
+When that migration copies a native `ServerConfig.json`, `make install-jackett`
+also rewrites `LocalBindAddress` to `0.0.0.0`. This is required in Docker,
+because a native macOS value such as `127.0.0.1` makes Jackett listen only on
+the container loopback, while an empty value is rejected by current Jackett
+builds as `Invalid url: 'http://:9117/'`. Using `0.0.0.0` keeps
+`http://127.0.0.1:9117` reachable from the host through Docker's published
+port.
 
 ### Manual Docker setup
 

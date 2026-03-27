@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make install` now also detects whether the Jackett Compose file is already
   installed and, in interactive use, offers to install it by delegating to
   `make install-jackett`.
+- `make install-jackett` now rewrites migrated Jackett configs to bind Docker
+  Jackett to `0.0.0.0` instead of container-local `127.0.0.1`, and avoids an
+  invalid empty bind value. This fixes both the empty-response failure where
+  the published WebUI and API port were unreachable from the host and the
+  startup crash `Invalid url: 'http://:9117/'`.
 
 ## [0.1.0] - 2026-02-25
 
