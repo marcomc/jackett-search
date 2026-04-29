@@ -11,6 +11,7 @@ links, flexible sorting, and JSON output for scripting and AI agents.
 - [Installation](#installation)
 - [Jackett Setup](#jackett-setup)
 - [FlareSolverr Setup](#flaresolverr-setup)
+- [Service Control](#service-control)
 - [Usage](#usage)
 - [JSON output fields](#json-output-fields)
 - [Using with an AI agent](#using-with-an-ai-agent)
@@ -349,6 +350,36 @@ docker compose -f ~/.config/jackett-search/flaresolverr-compose.yml up -d
 
 If Docker Desktop is not running, start Docker Desktop first and then run the
 same command.
+
+## Service Control
+
+Once FlareSolverr and Jackett compose files are installed, you can restart
+services without reinstalling files:
+
+```sh
+make up
+make up-flaresolverr
+make up-jackett
+make down
+make down-flaresolverr
+make down-jackett
+make ps
+make ps-flaresolverr
+make ps-jackett
+make logs
+make logs-flaresolverr
+make logs-jackett
+```
+
+Use cases:
+
+- `make up` after reboot or Docker restart
+- `make down` before stopping all local containers
+- `make ps` for a quick operational status check
+- `make logs` if a test fails after restart
+
+If a compose file is missing, `make up-*` reports the corresponding missing
+`install-*` target.
 
 ### Automatic restart behavior
 

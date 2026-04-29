@@ -1,6 +1,6 @@
 [project]
 name = "jackett-search"
-version = "0.1.0"
+version = "0.2.1"
 description = "Non-interactive Jackett search CLI with JSON output, colour table, and magnet links"
 readme = "README.md"
 license = { file = "LICENSE" }

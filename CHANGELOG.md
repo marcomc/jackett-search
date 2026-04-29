@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+_No changelog items yet for this version._
+
+## [0.2.1] - 2026-04-29
+
+### Added
+
+- Added Makefile lifecycle targets for Docker companion services:
+  - `make up`
+  - `make up-flaresolverr`
+  - `make up-jackett`
+  - `make down`
+  - `make down-flaresolverr`
+  - `make down-jackett`
+  - `make ps`
+  - `make ps-flaresolverr`
+  - `make ps-jackett`
+  - `make logs`
+  - `make logs-flaresolverr`
+  - `make logs-jackett`
+- `make up-*` targets now provide a direct recovery path when containers are down
+  after reboot instead of reinstalling compose files.
+
+### Changed
+
+- `make install` guidance now points users to dedicated service start/stop/status
+  targets for daily companion-service operations.
+
 ## [0.2.0] - 2026-03-10
 
 ### Added
@@ -92,5 +121,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`.gitignore`** covering Python artefacts, macOS metadata, and local
   config files that may contain API keys.
 
-[Unreleased]: https://github.com/marcomc/jackett-search/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/marcomc/jackett-search/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/marcomc/jackett-search/releases/tag/v0.2.1
+[0.2.0]: https://github.com/marcomc/jackett-search/releases/tag/v0.2.0
 [0.1.0]: https://github.com/marcomc/jackett-search/releases/tag/v0.1.0

@@ -20,7 +20,14 @@ DOCKER_JACKETT_ENV := PUID=$(USER_ID) PGID=$(GROUP_ID) TZ=$(TIMEZONE) JACKETT_CO
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install install-flaresolverr install-jackett uninstall lint lint-py lint-md dev-deps
+.PHONY: help \
+	install install-flaresolverr install-jackett \
+	uninstall \
+	up up-flaresolverr up-jackett \
+	down down-flaresolverr down-jackett \
+	ps ps-flaresolverr ps-jackett \
+	logs logs-flaresolverr logs-jackett \
+	lint lint-py lint-md dev-deps
 
 help: ## Show available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -156,6 +163,112 @@ install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
 		echo "Start Docker Desktop first, then run:"; \
 		echo "  $(DOCKER_JACKETT_ENV) $(JACKETT_START_CMD)"; \
 	fi
+
+up: ## Start installed Docker companion services
+	@$(MAKE) up-flaresolverr
+	@$(MAKE) up-jackett
+
+up-flaresolverr: ## Start FlareSolverr from installed compose file
+	@command -v docker >/dev/null 2>&1 \
+		|| { echo "✗ docker not found — install Docker Desktop first"; exit 1; }
+	@docker compose version >/dev/null 2>&1 \
+		|| { echo "✗ docker compose not available — update Docker Desktop first"; exit 1; }
+	@if [ ! -f "$(FLARESOLVERR_COMPOSE_DST)" ]; then \
+		echo "✗ FlareSolverr compose file is not installed in $(FLARESOLVERR_COMPOSE_DST)"; \
+		echo "Run: make install-flaresolverr"; \
+		exit 1; \
+	fi
+	@if docker info >/dev/null 2>&1; then \
+		echo "Starting FlareSolverr..."; \
+		$(FLARESOLVERR_START_CMD) >/dev/null || exit 1; \
+		echo "✓ FlareSolverr started"; \
+	else \
+		echo "Docker service is not running."; \
+		echo "Start Docker Desktop first, then run:"; \
+		echo "  $(FLARESOLVERR_START_CMD)"; \
+		exit 1; \
+	fi
+
+up-jackett: ## Start Docker Jackett from installed compose file
+	@command -v docker >/dev/null 2>&1 \
+		|| { echo "✗ docker not found — install Docker Desktop first"; exit 1; }
+	@docker compose version >/dev/null 2>&1 \
+		|| { echo "✗ docker compose not available — update Docker Desktop first"; exit 1; }
+	@if [ ! -f "$(JACKETT_COMPOSE_DST)" ]; then \
+		echo "✗ Jackett compose file is not installed in $(JACKETT_COMPOSE_DST)"; \
+		echo "Run: make install-jackett"; \
+		exit 1; \
+	fi
+	@if docker info >/dev/null 2>&1; then \
+		echo "Starting Jackett..."; \
+		$(DOCKER_JACKETT_ENV) $(JACKETT_START_CMD) >/dev/null || exit 1; \
+		echo "✓ Jackett started"; \
+	else \
+		echo "Docker service is not running."; \
+		echo "Start Docker Desktop first, then run:"; \
+		echo "  $(DOCKER_JACKETT_ENV) $(JACKETT_START_CMD)"; \
+		exit 1; \
+	fi
+
+down: ## Stop installed Docker companion services
+	@$(MAKE) down-flaresolverr || true
+	@$(MAKE) down-jackett || true
+
+down-flaresolverr: ## Stop FlareSolverr without removing its data
+	@if [ ! -f "$(FLARESOLVERR_COMPOSE_DST)" ]; then \
+		echo "FlareSolverr compose file not installed."; \
+		exit 0; \
+	fi
+	@if [ -f "$(FLARESOLVERR_COMPOSE_DST)" ]; then \
+		echo "Stopping FlareSolverr..."; \
+		docker compose -f "$(FLARESOLVERR_COMPOSE_DST)" down; \
+	fi
+
+down-jackett: ## Stop Docker Jackett without removing its data
+	@if [ ! -f "$(JACKETT_COMPOSE_DST)" ]; then \
+		echo "Jackett compose file not installed."; \
+		exit 0; \
+	fi
+	@if [ -f "$(JACKETT_COMPOSE_DST)" ]; then \
+		echo "Stopping Jackett..."; \
+		docker compose -f "$(JACKETT_COMPOSE_DST)" down; \
+	fi
+
+ps: ## Show status of installed companion services
+	@$(MAKE) ps-flaresolverr
+	@$(MAKE) ps-jackett
+
+ps-flaresolverr: ## Show FlareSolverr compose service status
+	@if [ ! -f "$(FLARESOLVERR_COMPOSE_DST)" ]; then \
+		echo "FlareSolverr compose file not installed."; \
+		exit 0; \
+	fi
+	docker compose -f "$(FLARESOLVERR_COMPOSE_DST)" ps
+
+ps-jackett: ## Show Jackett compose service status
+	@if [ ! -f "$(JACKETT_COMPOSE_DST)" ]; then \
+		echo "Jackett compose file not installed."; \
+		exit 0; \
+	fi
+	docker compose -f "$(JACKETT_COMPOSE_DST)" ps
+
+logs: ## Show latest logs for all installed companion services
+	@$(MAKE) logs-flaresolverr
+	@$(MAKE) logs-jackett
+
+logs-flaresolverr: ## Show FlareSolverr logs (tail=100)
+	@if [ ! -f "$(FLARESOLVERR_COMPOSE_DST)" ]; then \
+		echo "FlareSolverr compose file not installed."; \
+		exit 0; \
+	fi
+	docker compose -f "$(FLARESOLVERR_COMPOSE_DST)" logs --tail=100
+
+logs-jackett: ## Show Jackett logs (tail=100)
+	@if [ ! -f "$(JACKETT_COMPOSE_DST)" ]; then \
+		echo "Jackett compose file not installed."; \
+		exit 0; \
+	fi
+	docker compose -f "$(JACKETT_COMPOSE_DST)" logs --tail=100
 
 uninstall: ## Remove jackett-search from $(INSTALL_DIR)
 	@rm -f $(INSTALL_PATH) 2>/dev/null \

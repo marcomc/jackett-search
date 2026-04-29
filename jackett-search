@@ -43,7 +43,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.1"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
