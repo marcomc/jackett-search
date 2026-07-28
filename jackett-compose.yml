@@ -13,4 +13,11 @@ services:
       - ${JACKETT_DOWNLOADS_DIR:-~/.config/jackett-search/jackett-downloads}:/downloads
     ports:
       - "127.0.0.1:9117:9117"
+    networks:
+      - jackett-search
     restart: unless-stopped
+
+networks:
+  jackett-search:
+    external: true
+    name: jackett-search

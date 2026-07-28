@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-07-28 - Interactive search mode
+## [0.3.0] - 2026-07-29 - Interactive search mode
 
 ### Added
 
@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to exit cleanly.
 - Avoid a misleading permission-denied message during installation by using a
   user-writable default prefix.
+- Connect Docker Jackett and FlareSolverr through a shared Docker network,
+  avoiding the macOS-only `host.docker.internal` gateway on Linux hosts.
+- Exclude macOS `._*` and `.DS_Store` metadata from migrated Jackett
+  configuration to prevent .NET DataProtection key-ring corruption.
 
 ## [0.2.1] - 2026-04-29
 

@@ -17,6 +17,7 @@ JACKETT_APP_DIR := $(JACKETT_DATA_DIR)/Jackett
 JACKETT_DOWNLOADS_DIR := $(CONFIG_DIR)/jackett-downloads
 JACKETT_NATIVE_CONFIG_DIR := $(HOME)/Library/Application Support/Jackett
 JACKETT_SERVER_CONFIG := $(JACKETT_APP_DIR)/ServerConfig.json
+DOCKER_NETWORK := jackett-search
 JACKETT_START_CMD := docker compose -f "$(JACKETT_COMPOSE_DST)" up -d
 USER_ID := $(shell id -u)
 GROUP_ID := $(shell id -g)
@@ -27,6 +28,7 @@ DOCKER_JACKETT_ENV := PUID=$(USER_ID) PGID=$(GROUP_ID) TZ=$(TIMEZONE) JACKETT_CO
 
 .PHONY: help \
 	install install-flaresolverr install-jackett \
+	ensure-jackett-network \
 	uninstall \
 	up up-flaresolverr up-jackett \
 	down down-flaresolverr down-jackett \
@@ -95,6 +97,7 @@ install-flaresolverr: ## Install FlareSolverr Docker Compose file in $(CONFIG_DI
 	@echo "  Manual start command:"
 	@echo "    $(FLARESOLVERR_START_CMD)"
 	@if docker info >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory ensure-jackett-network || exit 1; \
 		if docker inspect flaresolverr >/dev/null 2>&1; then \
 			image=$$(docker inspect -f '{{.Config.Image}}' flaresolverr 2>/dev/null || true); \
 			if [ "$$image" = "ghcr.io/flaresolverr/flaresolverr:latest" ]; then \
@@ -120,7 +123,7 @@ install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
 	@if [ ! -f "$(JACKETT_SERVER_CONFIG)" ] && [ -d "$(JACKETT_NATIVE_CONFIG_DIR)" ]; then \
 		for item in DataProtection Indexers ServerConfig.json; do \
 			if [ -e "$(JACKETT_NATIVE_CONFIG_DIR)/$$item" ]; then \
-				cp -R "$(JACKETT_NATIVE_CONFIG_DIR)/$$item" "$(JACKETT_APP_DIR)"; \
+				COPYFILE_DISABLE=1 cp -R "$(JACKETT_NATIVE_CONFIG_DIR)/$$item" "$(JACKETT_APP_DIR)"; \
 			fi; \
 		done; \
 		find "$(JACKETT_NATIVE_CONFIG_DIR)" -maxdepth 1 -type f -name 'log.txt*' -exec cp {} "$(JACKETT_APP_DIR)" \; ; \
@@ -130,21 +133,26 @@ install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
 		for item in DataProtection Indexers ServerConfig.json; do \
 			if [ -e "$(JACKETT_DATA_DIR)/$$item" ]; then \
 				rm -rf "$(JACKETT_APP_DIR)/$$item"; \
-				cp -R "$(JACKETT_DATA_DIR)/$$item" "$(JACKETT_APP_DIR)"; \
+				COPYFILE_DISABLE=1 cp -R "$(JACKETT_DATA_DIR)/$$item" "$(JACKETT_APP_DIR)"; \
 			fi; \
 		done; \
 		find "$(JACKETT_DATA_DIR)" -maxdepth 1 -type f -name 'log.txt*' -exec cp {} "$(JACKETT_APP_DIR)" \; ; \
 		echo "✓ Synced legacy Docker Jackett config into $(JACKETT_APP_DIR)"; \
 	fi
+	@metadata_files=$$(find "$(JACKETT_APP_DIR)" -type f \( -name '._*' -o -name '.DS_Store' \) -print -delete | wc -l | tr -d ' '); \
+	if [ "$$metadata_files" -gt 0 ]; then \
+		echo "✓ Removed $$metadata_files macOS metadata sidecar file(s) from Jackett config"; \
+	fi
 	@if [ -f "$(JACKETT_SERVER_CONFIG)" ]; then \
-		JACKETT_SERVER_CONFIG="$(JACKETT_SERVER_CONFIG)" python3 -c 'import json, os, pathlib; path = pathlib.Path(os.environ["JACKETT_SERVER_CONFIG"]); data = json.loads(path.read_text()); data["FlareSolverrUrl"] = "http://host.docker.internal:8191"; data["LocalBindAddress"] = "0.0.0.0"; path.write_text(json.dumps(data, indent=2) + "\n")'; \
-		echo "✓ Set Docker Jackett FlareSolverr URL → http://host.docker.internal:8191"; \
+		JACKETT_SERVER_CONFIG="$(JACKETT_SERVER_CONFIG)" python3 -c 'import json, os, pathlib; path = pathlib.Path(os.environ["JACKETT_SERVER_CONFIG"]); data = json.loads(path.read_text()); data["FlareSolverrUrl"] = "http://flaresolverr:8191"; data["LocalBindAddress"] = "0.0.0.0"; path.write_text(json.dumps(data, indent=2) + "\n")'; \
+		echo "✓ Set Docker Jackett FlareSolverr URL → http://flaresolverr:8191"; \
 		echo "✓ Set Docker Jackett bind address → 0.0.0.0"; \
 	fi
 	@echo "✓ Installed Jackett compose file → $(JACKETT_COMPOSE_DST)"
 	@echo "  Manual start command:"
 	@echo "    $(DOCKER_JACKETT_ENV) $(JACKETT_START_CMD)"
 	@if docker info >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory ensure-jackett-network || exit 1; \
 		echo "Pulling latest Jackett image..."; \
 		if docker inspect jackett >/dev/null 2>&1; then \
 			image=$$(docker inspect -f '{{.Config.Image}}' jackett 2>/dev/null || true); \
@@ -163,8 +171,8 @@ install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
 			done; \
 		fi; \
 		if [ -f "$(JACKETT_SERVER_CONFIG)" ]; then \
-			JACKETT_SERVER_CONFIG="$(JACKETT_SERVER_CONFIG)" python3 -c 'import json, os, pathlib; path = pathlib.Path(os.environ["JACKETT_SERVER_CONFIG"]); data = json.loads(path.read_text()); data["FlareSolverrUrl"] = "http://host.docker.internal:8191"; data["LocalBindAddress"] = "0.0.0.0"; path.write_text(json.dumps(data, indent=2) + "\n")'; \
-			echo "✓ Set Docker Jackett FlareSolverr URL → http://host.docker.internal:8191"; \
+			JACKETT_SERVER_CONFIG="$(JACKETT_SERVER_CONFIG)" python3 -c 'import json, os, pathlib; path = pathlib.Path(os.environ["JACKETT_SERVER_CONFIG"]); data = json.loads(path.read_text()); data["FlareSolverrUrl"] = "http://flaresolverr:8191"; data["LocalBindAddress"] = "0.0.0.0"; path.write_text(json.dumps(data, indent=2) + "\n")'; \
+			echo "✓ Set Docker Jackett FlareSolverr URL → http://flaresolverr:8191"; \
 			echo "✓ Set Docker Jackett bind address → 0.0.0.0"; \
 			$(DOCKER_JACKETT_ENV) docker compose -f "$(JACKETT_COMPOSE_DST)" restart jackett >/dev/null || exit 1; \
 		else \
@@ -176,6 +184,18 @@ install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
 		echo "Docker service is not running."; \
 		echo "Start Docker Desktop first, then run:"; \
 		echo "  $(DOCKER_JACKETT_ENV) $(JACKETT_START_CMD)"; \
+	fi
+
+ensure-jackett-network: ## Create the shared Docker network used by companion services
+	@command -v docker >/dev/null 2>&1 \
+		|| { echo "✗ docker not found — install Docker first"; exit 1; }
+	@if docker network inspect "$(DOCKER_NETWORK)" >/dev/null 2>&1; then \
+		echo "✓ Shared Docker network already exists → $(DOCKER_NETWORK)"; \
+	elif docker network create "$(DOCKER_NETWORK)" >/dev/null; then \
+		echo "✓ Created shared Docker network → $(DOCKER_NETWORK)"; \
+	else \
+		echo "✗ Cannot create shared Docker network $(DOCKER_NETWORK)."; \
+		exit 1; \
 	fi
 
 up: ## Start installed Docker companion services
@@ -193,6 +213,7 @@ up-flaresolverr: ## Start FlareSolverr from installed compose file
 		exit 1; \
 	fi
 	@if docker info >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory ensure-jackett-network || exit 1; \
 		echo "Starting FlareSolverr..."; \
 		$(FLARESOLVERR_START_CMD) >/dev/null || exit 1; \
 		echo "✓ FlareSolverr started"; \
@@ -214,6 +235,7 @@ up-jackett: ## Start Docker Jackett from installed compose file
 		exit 1; \
 	fi
 	@if docker info >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory ensure-jackett-network || exit 1; \
 		echo "Starting Jackett..."; \
 		$(DOCKER_JACKETT_ENV) $(JACKETT_START_CMD) >/dev/null || exit 1; \
 		echo "✓ Jackett started"; \

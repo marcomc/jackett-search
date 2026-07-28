@@ -131,6 +131,7 @@ interactive terminal it offers to install:
 The FlareSolverr installer:
 
 - installs `flaresolverr-compose.yml` into `~/.config/jackett-search/`
+- creates the shared `jackett-search` Docker network when Docker is running
 - prints the manual start command
 - starts FlareSolverr immediately when Docker is already running
 - otherwise tells you to start Docker Desktop first and rerun the printed command
@@ -139,8 +140,8 @@ The Jackett installer:
 
 - installs `jackett-compose.yml` into `~/.config/jackett-search/`
 - creates persistent Docker config/download directories under `~/.config/jackett-search/`
-- copies an existing native macOS Jackett config into the Docker config directory the first time, if found
-- rewrites Jackett's FlareSolverr URL to `http://host.docker.internal:8191` so Docker Jackett can reach the host-published FlareSolverr service
+- copies an existing native macOS Jackett config into the Docker config directory the first time, excluding `._*` and `.DS_Store` metadata
+- rewrites Jackett's FlareSolverr URL to `http://flaresolverr:8191` through the shared Docker network
 - rewrites Jackett's bind address to `0.0.0.0` so the Docker-published port is reachable from the host
 - pulls the latest Jackett image before starting it
 - prints the manual start command with the required environment variables
@@ -169,9 +170,26 @@ The bundled FlareSolverr service uses Docker's `unless-stopped` restart policy,
 so once Docker Desktop is running again it will come back automatically.
 The bundled Compose files also use distinct Compose project names, so managing
 Jackett does not produce orphan-container warnings for FlareSolverr and vice versa.
+They join the persistent `jackett-search` network, where Docker DNS resolves
+the FlareSolverr service as `flaresolverr` on both macOS and Linux.
 If you previously used an older revision of this repo that created plain
 `jackett` or `flaresolverr` containers, the installers remove those legacy
 containers before starting the Compose-managed services.
+
+### Updating an existing Docker installation
+
+`make install` preserves existing Compose files. To replace them with the
+current bundled definitions, run these commands in order:
+
+```sh
+make install-flaresolverr
+make install-jackett
+```
+
+They create the shared network, rewrite the Jackett endpoint, remove macOS
+metadata sidecars, and restart the services. These commands intentionally
+replace the installed companion Compose files. Keep a copy first if you have
+made local changes to them.
 
 Or manually:
 
@@ -205,7 +223,7 @@ http://127.0.0.1:8191
 For Docker Jackett installed with this repo:
 
 ```text
-http://host.docker.internal:8191
+http://flaresolverr:8191
 ```
 
 Then click:
@@ -286,11 +304,18 @@ builds as `Invalid url: 'http://:9117/'`. Using `0.0.0.0` keeps
 `http://127.0.0.1:9117` reachable from the host through Docker's published
 port.
 
+The migration excludes macOS AppleDouble (`._*`) and Finder (`.DS_Store`)
+metadata. They are not Jackett configuration and can corrupt its .NET key ring
+when copied into `DataProtection`.
+
 ### Manual Docker setup
 
 If you want to start Docker Jackett manually after installation, run:
 
 ```sh
+docker network inspect jackett-search >/dev/null 2>&1 \
+  || docker network create jackett-search
+
 PUID="$(id -u)" \
 PGID="$(id -g)" \
 TZ="${TZ:-UTC}" \
@@ -442,7 +467,7 @@ Then verify in Jackett WebUI that:
 
 - the FlareSolverr URL is correct for your Jackett mode:
 - native Jackett: `http://127.0.0.1:8191`
-- Docker Jackett: `http://host.docker.internal:8191`
+- Docker Jackett: `http://flaresolverr:8191`
 - you clicked `Apply server settings`
 - the affected indexer test now passes
 

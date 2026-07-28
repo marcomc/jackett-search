@@ -35,6 +35,21 @@ class InstallationTests(unittest.TestCase):
         self.assertIn("INSTALL_DIR ?= $(INSTALL_PREFIX)/bin", makefile)
         self.assertIn("INSTALL_LIB_DIR ?= $(INSTALL_PREFIX)/lib/jackett-search", makefile)
 
+    def test_docker_installation_uses_shared_network_and_service_dns(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+        self.assertIn("DOCKER_NETWORK := jackett-search", makefile)
+        self.assertIn("ensure-jackett-network", makefile)
+        self.assertIn("http://flaresolverr:8191", makefile)
+        self.assertNotIn("host.docker.internal", makefile)
+        self.assertIn("COPYFILE_DISABLE=1 cp -R", makefile)
+        self.assertIn("-name '._*'", makefile)
+
+        for compose_name in ("jackett-compose.yml", "flaresolverr-compose.yml"):
+            compose = (ROOT / compose_name).read_text(encoding="utf-8")
+            self.assertIn("networks:\n      - jackett-search", compose)
+            self.assertIn("jackett-search:\n    external: true", compose)
+
     def test_make_install_creates_a_standalone_runtime(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             install_root = Path(temporary_directory)
