@@ -1,10 +1,18 @@
 """Unit coverage for dependency-free interactive helpers and CLI guardrails."""
 
+import errno
+import fcntl
 import json
 import os
+import pty
+import select
+import shutil
+import signal
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -40,8 +48,12 @@ class InstallationTests(unittest.TestCase):
 
         self.assertIn("DOCKER_NETWORK := jackett-search", makefile)
         self.assertIn("ensure-jackett-network", makefile)
+        self.assertIn("DOCKER_NETWORK_SETUP_CMD", makefile)
+        self.assertIn("FLARESOLVERR_MANUAL_START_CMD", makefile)
+        self.assertIn("JACKETT_MANUAL_START_CMD", makefile)
         self.assertIn("http://flaresolverr:8191", makefile)
         self.assertNotIn("host.docker.internal", makefile)
+        self.assertNotIn("$(MAKE) --no-print-directory ensure-jackett-network", makefile)
         self.assertIn("COPYFILE_DISABLE=1 cp -R", makefile)
         self.assertIn("-name '._*'", makefile)
 
@@ -49,6 +61,64 @@ class InstallationTests(unittest.TestCase):
             compose = (ROOT / compose_name).read_text(encoding="utf-8")
             self.assertIn("networks:\n      - jackett-search", compose)
             self.assertIn("jackett-search:\n    external: true", compose)
+
+    def test_make_dry_runs_do_not_execute_docker_or_write_config(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            fake_bin = temporary_path / "bin"
+            fake_bin.mkdir()
+            docker_log = temporary_path / "docker.log"
+            fake_docker = fake_bin / "docker"
+            fake_docker.write_text(
+                '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$DOCKER_LOG"\nexit 0\n',
+                encoding="utf-8",
+            )
+            fake_docker.chmod(0o755)
+
+            environment = os.environ | {
+                "DOCKER_LOG": str(docker_log),
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            }
+            for target in (
+                "install",
+                "install-flaresolverr",
+                "install-jackett",
+                "up-flaresolverr",
+                "up-jackett",
+                "up",
+            ):
+                config_dir = temporary_path / target / "config"
+                dry_run = subprocess.run(
+                    [
+                        "make",
+                        "--no-print-directory",
+                        "-n",
+                        target,
+                        f"CONFIG_DIR={config_dir}",
+                        f"JACKETT_NATIVE_CONFIG_DIR={temporary_path / 'native'}",
+                    ],
+                    cwd=ROOT,
+                    capture_output=True,
+                    check=False,
+                    env=environment,
+                    text=True,
+                )
+
+                self.assertEqual(0, dry_run.returncode, dry_run.stderr)
+                self.assertFalse(config_dir.exists(), target)
+
+            self.assertFalse(docker_log.exists())
+
+            network_setup = subprocess.run(
+                ["make", "--no-print-directory", "ensure-jackett-network"],
+                cwd=ROOT,
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+            self.assertEqual(0, network_setup.returncode, network_setup.stderr)
+            self.assertIn("network inspect jackett-search", docker_log.read_text(encoding="utf-8"))
 
     def test_make_install_creates_a_standalone_runtime(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -104,6 +174,73 @@ class InstallationTests(unittest.TestCase):
             self.assertFalse(launcher.exists())
             self.assertFalse(install_lib_dir.exists())
 
+    def test_failed_standalone_upgrade_keeps_the_previous_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            install_root = Path(temporary_directory)
+            install_dir = install_root / "bin"
+            install_lib_dir = install_root / "lib" / "jackett-search"
+            config_dir = install_root / "config"
+            install_arguments = [
+                "make",
+                "--no-print-directory",
+                "install",
+                f"INSTALL_DIR={install_dir}",
+                f"INSTALL_LIB_DIR={install_lib_dir}",
+                f"CONFIG_DIR={config_dir}",
+            ]
+            initial_install = subprocess.run(
+                install_arguments,
+                cwd=ROOT,
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(0, initial_install.returncode, initial_install.stderr)
+
+            launcher = install_dir / "jackett-search"
+            previous_script = (install_lib_dir / "jackett-search").read_bytes()
+            previous_interactive = (install_lib_dir / "interactive.py").read_bytes()
+            fake_bin = install_root / "fake-bin"
+            fake_bin.mkdir()
+            install_counter = install_root / "install-count"
+            fake_install = fake_bin / "install"
+            fake_install.write_text(
+                "#!/bin/sh\n"
+                "count=0\n"
+                'if [ -f "$INSTALL_COUNTER" ]; then count=$(cat "$INSTALL_COUNTER"); fi\n'
+                "count=$((count + 1))\n"
+                'printf \'%s\\n\' "$count" > "$INSTALL_COUNTER"\n'
+                'if [ "$count" -eq 2 ]; then exit 1; fi\n'
+                'exec "$REAL_INSTALL" "$@"\n',
+                encoding="utf-8",
+            )
+            fake_install.chmod(0o755)
+            real_install = shutil.which("install")
+            self.assertIsNotNone(real_install)
+            environment = os.environ | {
+                "INSTALL_COUNTER": str(install_counter),
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                "REAL_INSTALL": str(real_install),
+            }
+
+            failed_upgrade = subprocess.run(
+                install_arguments,
+                cwd=ROOT,
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+
+            self.assertNotEqual(0, failed_upgrade.returncode)
+            self.assertIn("Cannot install", failed_upgrade.stdout)
+            self.assertEqual(previous_script, (install_lib_dir / "jackett-search").read_bytes())
+            self.assertEqual(
+                previous_interactive,
+                (install_lib_dir / "interactive.py").read_bytes(),
+            )
+            self.assertEqual((install_lib_dir / "jackett-search").resolve(), launcher.resolve())
+
 
 class SearchParamsTests(unittest.TestCase):
     """Validate persisted search settings and history semantics."""
@@ -145,6 +282,12 @@ class SearchParamsTests(unittest.TestCase):
     def test_form_selectors_and_numeric_fields_are_constrained(self):
         self.assertEqual(
             "seeders:asc", interactive.cycle_option(interactive.SORT_OPTIONS, "seeders", 1)
+        )
+        self.assertEqual(
+            "seeders", interactive.cycle_option(interactive.SORT_OPTIONS, "dlf,seeders", 1)
+        )
+        self.assertEqual(
+            "title:desc", interactive.cycle_option(interactive.SORT_OPTIONS, "dlf,seeders", -1)
         )
         self.assertEqual(
             "both", interactive.cycle_option(interactive.FILTER_OPTIONS, "torrents", 1)
@@ -354,6 +497,49 @@ class InteractiveStateTests(unittest.TestCase):
 
         self.assertLess(time.monotonic() - started, 1)
         session._confirm_exit.assert_called_once_with()
+
+    def test_ctrl_c_stops_an_in_progress_search_before_restoring_the_terminal(self):
+        class FakeScreen:
+            def getmaxyx(self):
+                return 24, 100
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *_arguments):
+                pass
+
+            def refresh(self):
+                pass
+
+            def timeout(self, _delay):
+                pass
+
+            def getch(self):
+                raise KeyboardInterrupt
+
+        fake_curses = SimpleNamespace(A_BOLD=0, A_DIM=0, error=RuntimeError)
+
+        def slow_search(_params):
+            time.sleep(5)
+            return []
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                slow_search,
+                config_path,
+            )
+            session.screen = FakeScreen()
+            session.curses = fake_curses
+
+            started = time.monotonic()
+            with self.assertRaises(KeyboardInterrupt):
+                session._perform_search(record=True)
+
+        self.assertLess(time.monotonic() - started, 1)
 
     def test_escape_from_results_opens_the_search_form_without_exiting(self):
         class FakeScreen:
@@ -966,6 +1152,179 @@ class InteractiveStateTests(unittest.TestCase):
 
             self.assertEqual(-1, session.screen.timeouts[-1])
 
+    def test_ctrl_c_cancels_folder_discovery_and_reaps_the_child(self):
+        class FakeScreen:
+            def __init__(self):
+                self.timeouts = []
+
+            def getmaxyx(self):
+                return 24, 120
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *_args):
+                pass
+
+            def refresh(self):
+                pass
+
+            def timeout(self, value):
+                self.timeouts.append(value)
+
+            def getch(self):
+                raise KeyboardInterrupt
+
+        class FakeCurses:
+            A_BOLD = 0
+            A_DIM = 0
+            error = Exception
+
+        class FakeProcess:
+            returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.screen = FakeScreen()
+            session.curses = FakeCurses()
+            process = FakeProcess()
+            with mock.patch.object(interactive.subprocess, "Popen", return_value=process):
+                with self.assertRaises(KeyboardInterrupt):
+                    session._run_folder_command(["putio"], "Loading folders")
+
+            self.assertEqual(-15, process.returncode)
+            self.assertEqual(-1, session.screen.timeouts[-1])
+
+    def test_successful_default_action_survives_preference_save_failure(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session._confirm = mock.Mock(return_value=True)
+            session._show_message = mock.Mock()
+            completed = SimpleNamespace(returncode=0, stderr="")
+            with mock.patch.object(
+                interactive.subprocess, "run", return_value=completed
+            ), mock.patch.object(
+                interactive, "update_toml_sections", side_effect=OSError("read-only config")
+            ):
+                session._activate_default("magnet:?xt=urn:btih:example")
+
+            self.assertIn("Opened with the system default application.", session.status)
+            self.assertIn("Preference was not saved", session.status)
+
+    def test_successful_putio_transfer_survives_preference_save_failure(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session._discover_putio_folders = mock.Mock(
+                return_value=[interactive.PutioFolder(0, "Root")]
+            )
+            session._choose_folder = mock.Mock(return_value=interactive.PutioFolder(0, "Root"))
+            session._confirm = mock.Mock(return_value=True)
+            session._draw_loading = mock.Mock()
+            session._show_message = mock.Mock()
+            completed = SimpleNamespace(returncode=0, stderr="", stdout="{}")
+            with mock.patch.object(
+                interactive.subprocess, "run", return_value=completed
+            ), mock.patch.object(
+                interactive, "update_toml_sections", side_effect=OSError("read-only config")
+            ):
+                session._activate_putio("magnet:?xt=urn:btih:example")
+
+            self.assertIn("Transfer created in Root.", session.status)
+            self.assertIn("Preference was not saved", session.status)
+
+
+@unittest.skipIf(
+    sys.platform == "win32", "curses alternate-screen tests require a Unix pseudo-terminal"
+)
+class InteractivePtyTests(unittest.TestCase):
+    """Exercise the real alternate-screen renderer without external dependencies."""
+
+    def test_form_renders_in_a_pty_and_accepts_ctrl_x(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            home = Path(temporary_directory)
+            config_path = home / ".config" / "jackett-search" / "config.toml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            child_pid, master = pty.fork()
+            if child_pid == 0:
+                environment = os.environ | {"HOME": str(home), "TERM": "xterm-256color"}
+                os.chdir(ROOT)
+                os.execve(
+                    sys.executable,
+                    [sys.executable, str(SCRIPT), "--interactive"],
+                    environment,
+                )
+
+            try:
+                fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
+
+                rendered = bytearray()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and b"New Jackett search" not in rendered:
+                    ready, _, _ = select.select([master], [], [], 0.1)
+                    if not ready:
+                        continue
+                    try:
+                        rendered.extend(os.read(master, 65536))
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+
+                self.assertIn(b"New Jackett search", rendered)
+                os.write(master, bytes((interactive.CTRL_X,)))
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline and b"Exit interactive mode?" not in rendered:
+                    ready, _, _ = select.select([master], [], [], 0.1)
+                    if not ready:
+                        continue
+                    try:
+                        rendered.extend(os.read(master, 65536))
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+
+                self.assertIn(b"Exit interactive mode?", rendered)
+            finally:
+                if child_pid:
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        os.waitpid(child_pid, 0)
+                    except ChildProcessError:
+                        pass
+                os.close(master)
+
 
 class CliGuardrailTests(unittest.TestCase):
     """Exercise parser-only failures without reading local configuration."""
@@ -996,6 +1355,38 @@ class CliGuardrailTests(unittest.TestCase):
         completed = self.run_cli("--clear-history", "--limit", "5")
         self.assertEqual(2, completed.returncode)
         self.assertIn("cannot be combined with search or output arguments", completed.stderr)
+
+    def test_interactive_forwards_cli_search_options_to_the_session(self):
+        config_path = Path("config.toml")
+        with mock.patch.object(
+            cli,
+            "load_config",
+            return_value=("http://jackett.example.test:9117", "test-key", config_path),
+        ), mock.patch.object(cli, "InteractiveSession") as session_class, mock.patch.object(
+            sys,
+            "argv",
+            [
+                "jackett-search",
+                "--interactive",
+                "--torrent-only",
+                "--sort",
+                "dlf,seeders",
+                "--limit",
+                "30",
+                "--timeout",
+                "20",
+                "Example",
+            ],
+        ):
+            cli.main()
+
+        initial_params = session_class.call_args.args[0]
+        self.assertEqual("Example", initial_params.query)
+        self.assertEqual("dlf,seeders", initial_params.sort)
+        self.assertEqual(30, initial_params.limit)
+        self.assertEqual(20, initial_params.timeout)
+        self.assertEqual("torrents", initial_params.result_filter)
+        session_class.return_value.run.assert_called_once_with()
 
 
 class ExistingCliTests(unittest.TestCase):

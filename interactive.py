@@ -81,7 +81,7 @@ def cycle_option(options: Sequence[str], value: str, step: int) -> str:
     try:
         index = options.index(value)
     except ValueError:
-        index = 0
+        return options[0] if step > 0 else options[-1]
     return options[(index + step) % len(options)]
 
 
@@ -935,7 +935,7 @@ class InteractiveSession:
                     spinner_index,
                     "Discovering configured indexers",
                 )
-        except ExitInteractiveMode:
+        except (ExitInteractiveMode, KeyboardInterrupt):
             if process.is_alive():
                 self._stop_search_worker(process)
             raise
@@ -1340,8 +1340,8 @@ class InteractiveSession:
                 message = completed.stderr.strip() or "Could not open the URL."
             if not self._retry_or_return("Open failed", message):
                 return
-        self._persist_client("default")
-        self.status = "Opened with the system default application."
+        preference_notice = self._persist_client("default")
+        self.status = "Opened with the system default application." + preference_notice
         self._show_message("Action complete", self.status)
 
     def _run_folder_command(self, command: Sequence[str], progress: str) -> Dict[str, Any]:
@@ -1351,31 +1351,25 @@ class InteractiveSession:
             mode="w+t", encoding="utf-8"
         ) as stdout_file, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_file:
             process = subprocess.Popen(command, stdout=stdout_file, stderr=stderr_file, text=True)
-            while process.poll() is None:
-                self.screen.timeout(100)
-                key = self.screen.getch()
-                if key == CTRL_X:
-                    if self._confirm_exit():
-                        process.terminate()
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-                            process.wait()
-                        raise ExitInteractiveMode()
-                    self._draw_loading(progress)
-                    continue
-                if key == 27:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
-                    self.screen.timeout(-1)
-                    raise CancelledError()
-                time.sleep(0.02)
-            self.screen.timeout(-1)
+            try:
+                while process.poll() is None:
+                    self.screen.timeout(100)
+                    key = self.screen.getch()
+                    if key == CTRL_X:
+                        if self._confirm_exit():
+                            self._stop_subprocess(process)
+                            raise ExitInteractiveMode()
+                        self._draw_loading(progress)
+                        continue
+                    if key == 27:
+                        self._stop_subprocess(process)
+                        raise CancelledError()
+                    time.sleep(0.02)
+            except KeyboardInterrupt:
+                self._stop_subprocess(process)
+                raise
+            finally:
+                self.screen.timeout(-1)
             stdout_file.seek(0)
             stderr_file.seek(0)
             stdout = stdout_file.read()
@@ -1389,6 +1383,18 @@ class InteractiveSession:
         if not isinstance(payload, dict):
             raise RuntimeError("put.io returned an unexpected folder response.")
         return payload
+
+    @staticmethod
+    def _stop_subprocess(process: subprocess.Popen) -> None:
+        """Terminate and reap a cancellable child process exactly once."""
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
 
     def _discover_putio_folders(self) -> List[PutioFolder]:
         folders = [PutioFolder(0, "Root")]
@@ -1523,16 +1529,17 @@ class InteractiveSession:
             response = json.loads(completed.stdout)
         except json.JSONDecodeError:
             response = {}
-        self._persist_client("putio")
-        self._persist_putio_folder(folder.id)
+        preference_notice = self._persist_client("putio") + self._persist_putio_folder(folder.id)
         transfer_id = _transfer_id(response) if isinstance(response, dict) else None
         if transfer_id is None:
-            self.status = f"Transfer created in {folder.path}."
+            self.status = f"Transfer created in {folder.path}." + preference_notice
             self._show_message("put.io transfer created", self.status)
             return
-        self._post_submit_cancel(transfer_id, folder.path)
+        self._post_submit_cancel(transfer_id, folder.path, preference_notice)
 
-    def _post_submit_cancel(self, transfer_id: int, folder_path: str) -> None:
+    def _post_submit_cancel(
+        self, transfer_id: int, folder_path: str, preference_notice: str = ""
+    ) -> None:
         self._clear()
         self._add(0, 0, "put.io transfer created", self.curses.A_BOLD)
         self._add(2, 0, f"Destination: {folder_path}")
@@ -1544,7 +1551,7 @@ class InteractiveSession:
             if key == CTRL_X:
                 self._request_exit()
             if key in (10, 13, self.curses.KEY_ENTER, 27):
-                self.status = f"Transfer created in {folder_path}."
+                self.status = f"Transfer created in {folder_path}." + preference_notice
                 return
             if key == ord("c"):
                 while True:
@@ -1559,7 +1566,7 @@ class InteractiveSession:
                         message = str(error)
                     else:
                         if completed.returncode == 0:
-                            self.status = f"Transfer {transfer_id} cancelled."
+                            self.status = f"Transfer {transfer_id} cancelled." + preference_notice
                             self._show_message("put.io transfer", self.status)
                             return
                         message = completed.stderr.strip() or "Could not cancel the transfer."
@@ -1567,13 +1574,20 @@ class InteractiveSession:
                         self.status = message
                         return
 
-    def _persist_client(self, client: str) -> None:
+    def _persist_client(self, client: str) -> str:
         self.preferences.last_client = client
-        update_toml_sections(self.config_path, {"interactive": {"last_client": client}})
+        return self._persist_preferences({"interactive": {"last_client": client}})
 
-    def _persist_putio_folder(self, folder_id: int) -> None:
+    def _persist_putio_folder(self, folder_id: int) -> str:
         self.preferences.putio_last_folder_id = folder_id
-        update_toml_sections(
-            self.config_path,
+        return self._persist_preferences(
             {"interactive.clients.putio": {"last_folder_id": folder_id}},
         )
+
+    def _persist_preferences(self, updates: Dict[str, Dict[str, Any]]) -> str:
+        """Keep completed actions successful when optional preference saving fails."""
+        try:
+            update_toml_sections(self.config_path, updates)
+        except OSError as error:
+            return f" Preference was not saved: {error}."
+        return ""

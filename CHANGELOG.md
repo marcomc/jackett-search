@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - Unreleased - Interactive search mode
+## [0.3.0] - 2026-07-29 - Interactive search mode
 
 ### Added
 
@@ -46,10 +46,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to exit cleanly.
 - Avoid a misleading permission-denied message during installation by using a
   user-writable default prefix.
+- Keep the previous standalone runtime intact if an upgrade cannot fully stage
+  its replacement.
+- Keep `make -n` side-effect free for installation and companion-service
+  commands.
 - Connect Docker Jackett and FlareSolverr through a shared Docker network,
   avoiding the macOS-only `host.docker.internal` gateway on Linux hosts.
+- Make installer-reported manual Docker commands create that external network
+  before starting either companion service.
 - Exclude macOS `._*` and `.DS_Store` metadata from migrated Jackett
   configuration to prevent .NET DataProtection key-ring corruption.
+- Terminate active Jackett-search and put.io child processes before handling
+  `Ctrl-C`, and preserve completed client actions if preference saving fails.
+- Use the stable Jackett WebUI root URL in the Docker verification instructions.
+- Preserve a compound CLI sort for its initial interactive search and make the
+  first selector change choose a deterministic supported sort.
 
 ## [0.2.1] - 2026-04-29
 
@@ -163,7 +174,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`.gitignore`** covering Python artefacts, macOS metadata, and local
   config files that may contain API keys.
 
-[0.3.0]: https://github.com/marcomc/jackett-search/releases/tag/v0.3.0
+[0.3.0]: https://github.com/marcomc/jackett-search/compare/v0.2.1...release/0.3.0
 [0.2.1]: https://github.com/marcomc/jackett-search/releases/tag/v0.2.1
 [0.2.0]: https://github.com/marcomc/jackett-search/releases/tag/v0.2.0
 [0.1.0]: https://github.com/marcomc/jackett-search/releases/tag/v0.1.0

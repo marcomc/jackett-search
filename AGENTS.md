@@ -21,7 +21,9 @@ adding per-line suppression.
 ## Changelog — keep it current
 
 Every feature addition, bug fix or breaking change must be recorded in
-`CHANGELOG.md` under the `[Unreleased]` section using Keep a Changelog format:
+`CHANGELOG.md` under `[Unreleased]`, unless the latest concrete heading is the
+pending body of an explicit release-preparation branch. In that case, add it to
+that release heading using Keep a Changelog format:
 
 - `### Added` — new features
 - `### Changed` — changes to existing behaviour
@@ -70,6 +72,9 @@ The `.gitignore` already excludes `config.toml` and `*.local`.
 - Default standalone installs to a configurable user-local prefix. Install all
   local runtime imports outside the source checkout, test an isolated prefix,
   and reserve system-wide installation with `sudo` for an explicit request.
+- Keep `make -n` non-mutating: do not put recursive `$(MAKE)` calls inside
+  install or service recipes, because GNU Make executes those recipes during a
+  dry run. Cover each affected entrypoint with fake external binaries.
 - Keep container service addresses topology-specific; verify DNS from the
   consumer container and exclude macOS `._` metadata sidecars from copied
   runtime configuration.

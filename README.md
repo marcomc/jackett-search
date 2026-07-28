@@ -105,7 +105,8 @@ make install
 
 You may move or delete the source checkout after installation. Rerun
 `make install` from a newer checkout to upgrade the installed runtime; use
-`make uninstall` to remove the launcher and runtime files. Ensure
+`make uninstall` with the same installation overrides to remove the launcher
+and runtime files. Ensure
 `~/.local/bin` is on your `PATH`.
 
 The install location is configurable with one prefix parameter:
@@ -116,6 +117,7 @@ make install
 
 # A different user-owned prefix
 make install INSTALL_PREFIX="$HOME/apps"
+make uninstall INSTALL_PREFIX="$HOME/apps"
 ```
 
 `INSTALL_DIR` and `INSTALL_LIB_DIR` remain available as independent overrides
@@ -163,6 +165,8 @@ That installs this Compose file:
 and starts it with:
 
 ```sh
+docker network inspect jackett-search >/dev/null 2>&1 \
+  || docker network create jackett-search
 docker compose -f ~/.config/jackett-search/flaresolverr-compose.yml up -d
 ```
 
@@ -345,7 +349,7 @@ docker compose -f ~/.config/jackett-search/jackett-compose.yml logs --tail=100
 Then open:
 
 ```text
-http://127.0.0.1:9117/UI/
+http://127.0.0.1:9117/
 ```
 
 If you are switching from a Homebrew Jackett install, stop the native service
@@ -409,6 +413,8 @@ This installs:
 Then either let the target start it automatically, or start it yourself:
 
 ```sh
+docker network inspect jackett-search >/dev/null 2>&1 \
+  || docker network create jackett-search
 docker compose -f ~/.config/jackett-search/flaresolverr-compose.yml up -d
 ```
 
@@ -597,7 +603,9 @@ jackett-search --interactive
 options. `Limit (results)` and `Timeout (seconds)` accept digits only; use
 `↑`/`k` to increment or `↓`/`j` to decrement them. Values never fall below
 zero. Leave `Limit` empty for no result cap; incrementing a blank Limit starts
-at `1`.
+at `1`. A compound sort passed on the command line is preserved for its initial
+search; the first Sort-selector change switches to the first or last supported
+single-field sort, according to direction.
 
 CLI search flags provide initial values when a query is supplied:
 
@@ -677,7 +685,7 @@ history_limit = 50
 last_client = "putio"
 
 [interactive.clients.putio]
-last_folder_id = 1536595029
+last_folder_id = 123456789 # example folder ID
 ```
 
 `last_client` and `last_folder_id` are written after successful actions. The
