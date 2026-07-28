@@ -1,6 +1,11 @@
 SCRIPT      := jackett-search
-INSTALL_DIR := /usr/local/bin
+PYTHON_SOURCES := $(SCRIPT) interactive.py tests
+INSTALL_PREFIX ?= $(HOME)/.local
+INSTALL_DIR ?= $(INSTALL_PREFIX)/bin
 INSTALL_PATH := $(INSTALL_DIR)/$(SCRIPT)
+INSTALL_LIB_DIR ?= $(INSTALL_PREFIX)/lib/jackett-search
+INSTALL_SCRIPT_PATH := $(INSTALL_LIB_DIR)/$(SCRIPT)
+INSTALL_INTERACTIVE_PATH := $(INSTALL_LIB_DIR)/interactive.py
 CONFIG_DIR := $(HOME)/.config/jackett-search
 FLARESOLVERR_COMPOSE_SRC := $(CURDIR)/flaresolverr-compose.yml
 FLARESOLVERR_COMPOSE_DST := $(CONFIG_DIR)/flaresolverr-compose.yml
@@ -27,21 +32,30 @@ DOCKER_JACKETT_ENV := PUID=$(USER_ID) PGID=$(GROUP_ID) TZ=$(TIMEZONE) JACKETT_CO
 	down down-flaresolverr down-jackett \
 	ps ps-flaresolverr ps-jackett \
 	logs logs-flaresolverr logs-jackett \
-	lint lint-py lint-md dev-deps
+	lint lint-py lint-md test dev-deps
 
 help: ## Show available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-install: ## Install jackett-search to $(INSTALL_DIR) (requires Python 3.8+)
+install: ## Install standalone jackett-search for the current user
 	@command -v python3 >/dev/null 2>&1 \
 		|| { echo "✗ python3 not found — install Python 3.8+ first"; exit 1; }
 	@python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" \
 		|| { echo "✗ Python 3.8+ required (found $$(python3 --version))"; exit 1; }
-	@chmod +x $(SCRIPT)
-	@ln -sf "$(CURDIR)/$(SCRIPT)" $(INSTALL_PATH) \
-		|| sudo ln -sf "$(CURDIR)/$(SCRIPT)" $(INSTALL_PATH)
-	@echo "✓ Installed → $(INSTALL_PATH)"
+	@if ( mkdir -p "$(INSTALL_DIR)" "$(INSTALL_LIB_DIR)" \
+		&& install -m 755 "$(SCRIPT)" "$(INSTALL_SCRIPT_PATH)" \
+		&& install -m 644 interactive.py "$(INSTALL_INTERACTIVE_PATH)" \
+		&& ln -sf "$(INSTALL_SCRIPT_PATH)" "$(INSTALL_PATH)" \
+	) 2>/dev/null; then \
+		:; \
+	else \
+		echo "✗ Cannot install in $(INSTALL_DIR)."; \
+		echo "  Use a writable INSTALL_DIR, or invoke make through sudo for a system install."; \
+		exit 1; \
+	fi
+	@echo "✓ Installed standalone runtime → $(INSTALL_LIB_DIR)"
+	@echo "✓ Installed launcher → $(INSTALL_PATH)"
 	@echo "  Run: $(SCRIPT) --help"
 	@if [ -f "$(FLARESOLVERR_COMPOSE_DST)" ]; then \
 		echo "✓ FlareSolverr compose file already installed → $(FLARESOLVERR_COMPOSE_DST)"; \
@@ -270,10 +284,15 @@ logs-jackett: ## Show Jackett logs (tail=100)
 	fi
 	docker compose -f "$(JACKETT_COMPOSE_DST)" logs --tail=100
 
-uninstall: ## Remove jackett-search from $(INSTALL_DIR)
-	@rm -f $(INSTALL_PATH) 2>/dev/null \
-		|| sudo rm -f $(INSTALL_PATH)
-	@echo "✓ Uninstalled $(INSTALL_PATH)"
+uninstall: ## Remove the current user's standalone jackett-search installation
+	@if ( rm -f "$(INSTALL_PATH)" && rm -rf "$(INSTALL_LIB_DIR)" ) 2>/dev/null; then \
+		:; \
+	else \
+		echo "✗ Cannot remove the installation from $(INSTALL_DIR)."; \
+		echo "  Use the same INSTALL_DIR and INSTALL_LIB_DIR values used at installation."; \
+		exit 1; \
+	fi
+	@echo "✓ Uninstalled $(INSTALL_PATH) and $(INSTALL_LIB_DIR)"
 
 dev-deps: ## Install linting tools (ruff, markdownlint-cli)
 	@command -v ruff >/dev/null 2>&1 \
@@ -287,10 +306,13 @@ lint: lint-py lint-md ## Run all linters
 lint-py: ## Lint Python source with ruff
 	@command -v ruff >/dev/null 2>&1 \
 		|| { echo "✗ ruff not found — run: make dev-deps"; exit 1; }
-	ruff check $(SCRIPT)
-	ruff format --check $(SCRIPT)
+	ruff check $(PYTHON_SOURCES)
+	ruff format --check $(PYTHON_SOURCES)
 
 lint-md: ## Lint Markdown files with markdownlint
 	@command -v markdownlint >/dev/null 2>&1 \
 		|| { echo "✗ markdownlint not found — run: make dev-deps"; exit 1; }
 	markdownlint *.md
+
+test: ## Run dependency-free Python unit tests
+	python3 -m unittest discover -s tests -v

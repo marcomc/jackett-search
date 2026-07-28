@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-jackett-search — non-interactive Jackett search with JSON output.
+jackett-search — Jackett search with table, JSON, and interactive TUI output.
 
 Usage:
   jackett-search "<query>"
@@ -15,6 +15,9 @@ Usage:
   jackett-search --sort "dlf,seeders" "<query>"        # freeleech first
   jackett-search --sort "size:asc" "<query>"           # smallest first
   jackett-search --sort "seeders:asc,size:desc" "..."  # explicit dirs
+  jackett-search --interactive "<query>"
+  jackett-search --interactive
+  jackett-search --clear-history
 
 Sort fields — append :asc or :desc to override default direction:
   seeders   (S)   Active seeders            — default desc  ← best availability
@@ -43,26 +46,44 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-VERSION = "0.2.1"
+from interactive import (
+    InteractiveSession,
+    InteractiveUnavailableError,
+    SearchParams,
+    clear_history,
+    history_path_for,
+)
+
+VERSION = "0.3.0"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 
-def load_config():
-    candidates = [
+def config_candidates():
+    """Return Jackett config locations in their established priority order."""
+    return [
         Path.home() / ".config" / "jackett-search" / "config.toml",
         Path.home() / "Library" / "Application Support" / "jackett-search" / "config.toml",
         # Legacy fallback: torrra shares the same format
         Path.home() / "Library" / "Application Support" / "torrra" / "config.toml",
     ]
 
-    config_path = next((p for p in candidates if p.exists()), None)
+
+def find_config_path():
+    """Return the active config file, or the XDG location when none exists."""
+    candidates = config_candidates()
+    return next((path for path in candidates if path.exists()), candidates[0])
+
+
+def load_config():
+    """Load Jackett credentials and return the active config path as well."""
+    config_path = find_config_path()
     url = "http://127.0.0.1:9117"
     api_key = None
 
-    if config_path is not None:
-        with open(config_path) as f:
-            for line in f:
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as config_file:
+            for line in config_file:
                 line = line.strip()
                 if line.startswith("url") and "=" in line:
                     url = line.split("=", 1)[1].strip().strip('"')
@@ -70,7 +91,7 @@ def load_config():
                     api_key = line.split("=", 1)[1].strip().strip('"')
 
     if not api_key:
-        cfg_hint = str(candidates[0])
+        cfg_hint = str(config_candidates()[0])
         print(
             f"Error: api_key not found. Create {cfg_hint} with:\n"
             '  url     = "http://127.0.0.1:9117"\n'
@@ -79,7 +100,7 @@ def load_config():
         )
         sys.exit(1)
 
-    return url, api_key
+    return url, api_key, config_path
 
 
 # ── Sort ────────────────────────────────────────────────────────────────────────
@@ -233,23 +254,30 @@ def search(
     torrent_only=False,
     timeout=DEFAULT_TIMEOUT,
     sort=DEFAULT_SORT,
+    quiet=False,
+    progress_callback=None,
 ):
 
     indexer_ids = get_indexer_ids(url, api_key)
     if not indexer_ids:
-        print(
-            "Warning: could not fetch indexer list; falling back to /all",
-            file=sys.stderr,
-        )
+        if not quiet:
+            print(
+                "Warning: could not fetch indexer list; falling back to /all",
+                file=sys.stderr,
+            )
         indexer_ids = ["all"]
 
     timeout_label = f"{timeout}s" if timeout > 0 else "∞ (no timeout)"
-    print(
-        f"Searching {len(indexer_ids)} indexers (timeout {timeout_label} each)…",
-        file=sys.stderr,
-    )
+    if not quiet:
+        print(
+            f"Searching {len(indexer_ids)} indexers (timeout {timeout_label} each)…",
+            file=sys.stderr,
+        )
 
     all_results = []
+    completed_indexers = 0
+    if progress_callback is not None:
+        progress_callback(completed_indexers, len(indexer_ids))
     with ThreadPoolExecutor(max_workers=len(indexer_ids)) as pool:
         futures = {
             pool.submit(query_indexer, url, api_key, iid, query, timeout): iid
@@ -257,6 +285,9 @@ def search(
         }
         for future in as_completed(futures):
             all_results.extend(future.result())
+            completed_indexers += 1
+            if progress_callback is not None:
+                progress_callback(completed_indexers, len(indexer_ids))
 
     # ── filter ──
     if magnets_only:
@@ -475,7 +506,7 @@ def print_json(results):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Search Jackett and print results or magnet links.",
+        description="Search Jackett and print results, magnet links, or an interactive TUI.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Sort field aliases (prefix with - to flip direction):
@@ -498,9 +529,19 @@ Examples:
         """,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
-    parser.add_argument("query", help="Search query")
+    parser.add_argument("query", nargs="?", help="Search query")
     parser.add_argument(
         "--json", dest="as_json", action="store_true", help="Output results as JSON"
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Open a full-screen interactive search session (requires a TTY)",
+    )
+    parser.add_argument(
+        "--clear-history",
+        action="store_true",
+        help="Delete persisted interactive query history and exit",
     )
 
     link_group = parser.add_mutually_exclusive_group()
@@ -542,7 +583,72 @@ Examples:
     )
     args = parser.parse_args()
 
-    url, api_key = load_config()
+    if args.clear_history:
+        search_arguments = (
+            args.query,
+            args.interactive,
+            args.as_json,
+            args.magnet,
+            args.magnets_only,
+            args.torrent_only,
+            args.limit is not None,
+            args.timeout != DEFAULT_TIMEOUT,
+            args.sort != DEFAULT_SORT,
+        )
+        if any(search_arguments):
+            parser.error("--clear-history cannot be combined with search or output arguments.")
+        history_path = history_path_for(find_config_path())
+        if clear_history(history_path):
+            print(f"Cleared interactive query history: {history_path}")
+        else:
+            print(f"No persisted interactive query history found: {history_path}")
+        return
+
+    if args.interactive and (args.as_json or args.magnet):
+        parser.error("--json and --magnet cannot be used with --interactive.")
+    if not args.query and not args.interactive:
+        parser.error("the following arguments are required: query")
+
+    url, api_key, config_path = load_config()
+
+    if args.interactive:
+        result_filter = (
+            "magnets" if args.magnets_only else "torrents" if args.torrent_only else "both"
+        )
+        initial_params = SearchParams(
+            query=args.query or "",
+            sort=args.sort,
+            limit=args.limit,
+            timeout=args.timeout,
+            result_filter=result_filter,
+        )
+
+        def interactive_search(params, progress_callback=None):
+            return search(
+                params.query,
+                url,
+                api_key,
+                limit=params.limit,
+                magnets_only=params.result_filter == "magnets",
+                torrent_only=params.result_filter == "torrents",
+                timeout=params.timeout,
+                sort=params.sort,
+                quiet=True,
+                progress_callback=progress_callback,
+            )
+
+        try:
+            InteractiveSession(
+                initial_params,
+                interactive_search,
+                config_path,
+                progress_search_callback=interactive_search,
+            ).run()
+        except InteractiveUnavailableError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            sys.exit(2)
+        return
+
     results = search(
         args.query,
         url,

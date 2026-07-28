@@ -1,8 +1,9 @@
 # jackett-search
 
-A fast, non-interactive CLI tool that queries a local [Jackett](https://github.com/Jackett/Jackett)
+A fast CLI tool that queries a local [Jackett](https://github.com/Jackett/Jackett)
 instance and prints torrent search results to stdout — with colour, clickable
-links, flexible sorting, and JSON output for scripting and AI agents.
+links, flexible sorting, JSON output, and an optional dependency-free
+interactive terminal interface.
 
 ## Table of Contents
 
@@ -13,10 +14,13 @@ links, flexible sorting, and JSON output for scripting and AI agents.
 - [FlareSolverr Setup](#flaresolverr-setup)
 - [Service Control](#service-control)
 - [Usage](#usage)
+- [Interactive mode](#interactive-mode)
 - [JSON output fields](#json-output-fields)
 - [Using with an AI agent](#using-with-an-ai-agent)
 - [How it works](#how-it-works)
 - [Notes](#notes)
+- [Development](#development)
+- [License](#license)
 
 ## Why
 
@@ -32,6 +36,7 @@ API. `jackett-search` does exactly that.
 | Python | 3.8+ | `brew install python` |
 | Jackett | any | `brew install jackett` or `make install-jackett` |
 | Docker Desktop | current | `brew install --cask docker` |
+| put.io CLI | optional, interactive transfers | `brew install putdotio/tap/putio-cli` |
 
 No external Python packages are required — the script uses the standard library only.
 
@@ -90,6 +95,32 @@ cd jackett-search
 make install
 ```
 
+`make install` creates a standalone runtime, not a link back to this checkout:
+
+```text
+~/.local/lib/jackett-search/jackett-search
+~/.local/lib/jackett-search/interactive.py
+~/.local/bin/jackett-search -> ~/.local/lib/jackett-search/jackett-search
+```
+
+You may move or delete the source checkout after installation. Rerun
+`make install` from a newer checkout to upgrade the installed runtime; use
+`make uninstall` to remove the launcher and runtime files. Ensure
+`~/.local/bin` is on your `PATH`.
+
+The install location is configurable with one prefix parameter:
+
+```sh
+# Default: ~/.local/bin and ~/.local/lib/jackett-search
+make install
+
+# A different user-owned prefix
+make install INSTALL_PREFIX="$HOME/apps"
+```
+
+`INSTALL_DIR` and `INSTALL_LIB_DIR` remain available as independent overrides
+for an unusual layout.
+
 During `make install`, `jackett-search` now checks whether the bundled Docker
 Compose files are already present in `~/.config/jackett-search/`. In an
 interactive terminal it offers to install:
@@ -145,8 +176,16 @@ containers before starting the Compose-managed services.
 Or manually:
 
 ```sh
-chmod +x jackett-search
-sudo ln -sf "$PWD/jackett-search" /usr/local/bin/jackett-search
+install -d ~/.local/lib/jackett-search ~/.local/bin
+install -m 755 jackett-search ~/.local/lib/jackett-search/jackett-search
+install -m 644 interactive.py ~/.local/lib/jackett-search/interactive.py
+ln -sf ~/.local/lib/jackett-search/jackett-search ~/.local/bin/jackett-search
+```
+
+For a system-wide installation, choose the prefix explicitly:
+
+```sh
+sudo make install INSTALL_PREFIX=/usr/local
 ```
 
 ### 4 — Configure Jackett to use FlareSolverr
@@ -443,9 +482,11 @@ Filter:
                         (mutually exclusive with --magnets-only)
 
 Output:
+  --interactive           Open a full-screen interactive session (TTY only)
   --json                Emit results as a JSON array
   --limit N             Cap output at N results
   --magnet N            Print just the magnet URI for result #N (1-based)
+  --clear-history       Delete persisted interactive query history and exit
 
 Sort:
   --sort FIELDS         Comma-separated sort fields (default: seeders)
@@ -506,6 +547,129 @@ jackett-search --timeout 30 "<placeholder>"
 # combine flags
 jackett-search --magnets-only --sort "dlf,seeders" --limit 10 --json "<placeholder>"
 ```
+
+## Interactive mode
+
+`--interactive` starts a dependency-free full-screen TUI for macOS and Linux
+terminals with `curses` support. It requires interactive stdin and stdout, so
+it cannot be piped or redirected. Normal table, JSON, and `--magnet` output
+remain unchanged.
+
+Start a session with an initial query:
+
+```sh
+jackett-search --interactive "<placeholder>"
+```
+
+Or start in the search form, which lets you edit the query, sort order, limit,
+timeout, and magnet/torrent filter before searching:
+
+```sh
+jackett-search --interactive
+```
+
+`Sort` and `Filter` are selectors: use Left/Right (or Up/Down) to cycle valid
+options. `Limit (results)` and `Timeout (seconds)` accept digits only; use
+`↑`/`k` to increment or `↓`/`j` to decrement them. Values never fall below
+zero. Leave `Limit` empty for no result cap; incrementing a blank Limit starts
+at `1`.
+
+CLI search flags provide initial values when a query is supplied:
+
+```sh
+jackett-search --interactive --magnets-only --sort "dlf,seeders" --limit 30 "<placeholder>"
+```
+
+### Navigation
+
+Esc always presents a confirmation before cancelling an in-progress search or
+leaving completed results for the search form. `Ctrl-X` presents an exit
+confirmation from any TUI screen, including editable forms; `Ctrl-C` exits
+immediately. Cancelling either confirmation keeps the current search unchanged.
+
+| Key | Action |
+| --- | --- |
+| `↑`/`↓`, `j`/`k` | Move between result rows |
+| `←`/`→`, `h`/`l` | Focus the Magnet or Torrent action |
+| `PageUp`/`PageDown` | Move one page |
+| `Home`/`End`, `g`/`G` | Jump to the first or last row |
+| `Ctrl-U`/`Ctrl-D` | Move half a page |
+| `Enter` | Choose a client and confirm the focused action |
+| `c` | Copy the focused URL to the system clipboard |
+| `n` | Open a new search form, preserving previous values |
+| `r` | Repeat the current search |
+| `?` | Show in-session help |
+| `q` | Exit from the results view |
+| `Ctrl-X` | Confirm exit from any TUI screen, including forms |
+| `Ctrl-C` | Exit interactive mode immediately |
+| `Esc` | Confirm cancellation of a running search or return to the search form |
+
+The table uses the same title, size, numeric, DLF, and tracker column widths
+and semantic colours as normal table output. Its action slots make URL support
+explicit: `M magnet` and `T torrent` are available URLs, `M —` or `T —` means
+that URL type is absent, and brackets mark the action selected with `←`/`→` or
+`h`/`l`. The table uses a viewport sized to the terminal and redraws when the
+terminal is resized.
+
+### Search progress
+
+While configured indexers are being discovered, the TUI displays a spinner.
+Once discovery completes, its progress bar shows completed indexer requests out
+of the actual configured total, including the number still outstanding. An
+indexer that fails or reaches its timeout counts as complete because its request
+has finished; this is request completion, not an estimate of result quality.
+
+### Download clients
+
+The client picker exposes only commands available on `PATH`:
+
+- **put.io** — shown when the `putio` CLI is installed. It accepts both Magnet
+  and Torrent URLs.
+- **System default application** — `open` on macOS or `xdg-open` on Linux.
+
+Every client action requires confirmation. For put.io, the destination picker
+discovers visible folders recursively from the live account, always includes
+`Root`, supports incremental filtering, and displays nested folders as paths.
+The transfer is submitted with an argument list equivalent to:
+
+```sh
+putio transfers add --url "<selected-url>" --save-parent-id "<folder-id>" --output json
+```
+
+When put.io returns a transfer ID, the TUI immediately offers `c` to cancel
+that transfer. This is an undo after submission; cancelling at the confirmation
+screen prevents submission entirely.
+
+### Interactive preferences and history
+
+Interactive settings live in the active `config.toml`, without duplicating the
+Jackett API key:
+
+```toml
+[interactive]
+persist_query_history = true
+history_limit = 50
+last_client = "putio"
+
+[interactive.clients.putio]
+last_folder_id = 1536595029
+```
+
+`last_client` and `last_folder_id` are written after successful actions. The
+folder ID is revalidated against the live put.io folder list before use; if it
+no longer exists, `Root` is selected instead.
+
+Search history is saved beside the active config as `history.json`, with mode
+`0600`. It contains only query form settings—never the Jackett API key, Magnet
+URLs, result data, or transfer IDs. Set `persist_query_history = false` to keep
+history only for the current TUI session. Clear saved history at any time:
+
+```sh
+jackett-search --clear-history
+```
+
+Future work for configurable third-party clients and explicit multi-result
+batch submission is tracked in [`TODO.md`](TODO.md).
 
 ### JSON output fields
 

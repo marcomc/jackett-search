@@ -53,3 +53,23 @@ The `.gitignore` already excludes `config.toml` and `*.local`.
 - Column padding must use the pre-pad-then-colour pattern (pad visible text
   first, then wrap in ANSI) to avoid misalignment.  See `colour_seeds()` and
   `colour_dlf()` for the canonical example.
+
+## Interactive terminal UI and installation
+
+- Keep terminal-mode changes exception-safe: restore input settings before
+  propagating cancellation, and catch `KeyboardInterrupt` outside
+  `curses.wrapper` after cleanup completes.
+- Treat field constraints, destructive navigation, action availability, and
+  focus as explicit UI state. Printable keys remain input in editable fields;
+  use a documented non-printing key plus confirmation for exit or cancellation.
+- Render numeric controls with a semantic label, unit, bounds, and documented
+  empty-value behavior. Progress must report concrete completed work units,
+  not elapsed-time animation.
+- For cancellable blocking network work, use a separately terminable process
+  and verify cancellation plus renderer behavior through a pseudo-terminal.
+- Default standalone installs to a configurable user-local prefix. Install all
+  local runtime imports outside the source checkout, test an isolated prefix,
+  and reserve system-wide installation with `sudo` for an explicit request.
+- Keep container service addresses topology-specific; verify DNS from the
+  consumer container and exclude macOS `._` metadata sidecars from copied
+  runtime configuration.

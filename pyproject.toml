@@ -1,7 +1,7 @@
 [project]
 name = "jackett-search"
-version = "0.2.1"
-description = "Non-interactive Jackett search CLI with JSON output, colour table, and magnet links"
+version = "0.3.0"
+description = "Jackett search CLI with JSON, colour table, magnet links, and an interactive TUI"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.8"
