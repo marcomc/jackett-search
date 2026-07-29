@@ -1479,6 +1479,53 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertIn("1000 ", rendered)
             self.assertEqual(4, session._result_table_layout(interactive.MIN_WIDTH).number_width)
 
+    def test_full_result_table_preserves_five_digit_row_numbers(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def getmaxyx(self):
+                return 24, 144
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *arguments):
+                self.calls.append(arguments)
+
+            def refresh(self):
+                pass
+
+        fake_curses = SimpleNamespace(
+            A_BOLD=1,
+            A_DIM=2,
+            A_REVERSE=4,
+            A_UNDERLINE=8,
+            curs_set=mock.Mock(),
+            error=RuntimeError,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.screen = FakeScreen()
+            session.curses = fake_curses
+            session.results = [{"Title": "Result"}] * 10000
+            session.cursor_index = 9999
+
+            session._draw_results()
+
+            rendered = [arguments[2] for arguments in session.screen.calls]
+            layout = session._result_table_layout(144)
+            self.assertFalse(layout.compact_actions)
+            self.assertEqual(5, layout.number_width)
+            self.assertIn("10000 ", rendered)
+            self.assertTrue(session._result_table_layout(143).compact_actions)
+
     def test_cancelling_folder_discovery_restores_blocking_input(self):
         class FakeScreen:
             def __init__(self):

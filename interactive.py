@@ -755,8 +755,9 @@ class InteractiveSession:
 
     def _result_table_layout(self, width: int) -> ResultTableLayout:
         """Keep URL actions visible in every terminal accepted by the TUI."""
+        number_width = max(3, len(str(len(self.results))))
         full = ResultTableLayout(
-            number_width=4,
+            number_width=max(4, number_width),
             title_width=RESULT_TITLE_WIDTH,
             size_width=RESULT_SIZE_WIDTH,
             seeds_width=RESULT_SEEDS_WIDTH,
@@ -773,9 +774,8 @@ class InteractiveSession:
         if width - 1 >= self._result_table_content_width(full):
             return full
 
-        compact_number_width = max(3, len(str(len(self.results))))
         compact_without_title = ResultTableLayout(
-            number_width=compact_number_width,
+            number_width=number_width,
             title_width=0,
             size_width=COMPACT_RESULT_SIZE_WIDTH,
             seeds_width=COMPACT_RESULT_NUMERIC_WIDTH,
