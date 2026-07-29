@@ -656,14 +656,19 @@ has finished; this is request completion, not an estimate of result quality.
 
 The client picker exposes only commands available on `PATH`:
 
-- **put.io** — shown when the `putio` CLI is installed. It accepts both Magnet
-  and Torrent URLs.
+- **put.io** — shown when the `putio` CLI is installed for a selected Magnet
+  URL. A selected Torrent URL is a Jackett retrieval link and remains available
+  only to the system-default local client until torrent-payload delivery is
+  implemented.
 - **System default application** — `open` on macOS or `xdg-open` on Linux.
 
 Every client action requires confirmation. For put.io, the destination picker
 discovers visible folders recursively from the live account, always includes
 `Root`, supports incremental filtering, and displays nested folders as paths.
-The transfer is submitted with an argument list equivalent to:
+While filtering, every printable key is filter text—including `j`, `k`, `q`,
+`g`, and `G`; use arrows, PageUp/PageDown, Home/End, Escape, or Ctrl-X for
+navigation and cancellation. The selected Magnet URL is submitted with an
+argument list equivalent to:
 
 ```sh
 putio transfers add --url "<selected-url>" --save-parent-id "<folder-id>" --output json
@@ -671,7 +676,9 @@ putio transfers add --url "<selected-url>" --save-parent-id "<folder-id>" --outp
 
 When put.io returns a transfer ID, the TUI immediately offers `c` to cancel
 that transfer. This is an undo after submission; cancelling at the confirmation
-screen prevents submission entirely.
+screen prevents submission entirely. Escape during creation or cancellation
+confirms whether to stop the local command; the remote service may already have
+accepted that request, so check its transfer list after cancellation.
 
 ### Interactive preferences and history
 

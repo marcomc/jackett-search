@@ -61,6 +61,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use the stable Jackett WebUI root URL in the Docker verification instructions.
 - Preserve a compound CLI sort for its initial interactive search and make the
   first selector change choose a deterministic supported sort.
+- Offer put.io only for selected Magnet URLs, avoiding submission of private or
+  authenticated Jackett Torrent retrieval links to a remote service.
+- Keep all printable keys as text in the put.io folder filter, with non-printing
+  navigation and cancellation controls.
+- Allow confirmed Escape or Ctrl-X cancellation while the put.io transfer
+  creation or post-submit cancellation command is running, then terminate and
+  reap its local child process.
+- Retain the documented Python 3.8 runtime compatibility for cancellable
+  put.io commands.
 
 ## [0.2.1] - 2026-04-29
 

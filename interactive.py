@@ -1314,6 +1314,11 @@ class InteractiveSession:
             self.status = "The selected result has no usable URL for this action."
             return
         clients = available_clients()
+        if self.focused_action == "torrent":
+            # Jackett's Link can be its authenticated, private /dl/ proxy URL.
+            # A remote put.io transfer cannot reach that endpoint. Torrent-payload
+            # upload is a separate future adapter, so only magnets offer put.io.
+            clients = [(key, label) for key, label in clients if key != "putio"]
         selected = self._choose("Choose application", clients, self.preferences.last_client)
         if selected is None:
             return
@@ -1344,8 +1349,14 @@ class InteractiveSession:
         self.status = "Opened with the system default application." + preference_notice
         self._show_message("Action complete", self.status)
 
-    def _run_folder_command(self, command: Sequence[str], progress: str) -> Dict[str, Any]:
-        """Run a folder query without a shell while allowing Esc to cancel."""
+    def _run_cancellable_command(
+        self,
+        command: Sequence[str],
+        progress: str,
+        cancel_title: str,
+        cancel_message: str,
+    ) -> subprocess.CompletedProcess:
+        """Run a command without a shell while allowing confirmed cancellation."""
         self._draw_loading(progress)
         with tempfile.TemporaryFile(
             mode="w+t", encoding="utf-8"
@@ -1362,8 +1373,10 @@ class InteractiveSession:
                         self._draw_loading(progress)
                         continue
                     if key == 27:
-                        self._stop_subprocess(process)
-                        raise CancelledError()
+                        if self._confirm_search_transition(cancel_title, cancel_message):
+                            self._stop_subprocess(process)
+                            raise CancelledError()
+                        self._draw_loading(progress)
                     time.sleep(0.02)
             except KeyboardInterrupt:
                 self._stop_subprocess(process)
@@ -1374,10 +1387,25 @@ class InteractiveSession:
             stderr_file.seek(0)
             stdout = stdout_file.read()
             stderr = stderr_file.read().strip()
-        if process.returncode != 0:
-            raise RuntimeError(stderr or "put.io folder lookup failed.")
+        return subprocess.CompletedProcess(
+            list(command),
+            process.returncode if process.returncode is not None else 1,
+            stdout,
+            stderr,
+        )
+
+    def _run_folder_command(self, command: Sequence[str], progress: str) -> Dict[str, Any]:
+        """Run a put.io folder query and decode its JSON response."""
+        completed = self._run_cancellable_command(
+            command,
+            progress,
+            "Cancel put.io folder discovery?",
+            "This stops the current folder lookup.",
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr or "put.io folder lookup failed.")
         try:
-            payload = json.loads(stdout)
+            payload = json.loads(completed.stdout)
         except json.JSONDecodeError as error:
             raise RuntimeError("put.io returned invalid folder data.") from error
         if not isinstance(payload, dict):
@@ -1462,39 +1490,37 @@ class InteractiveSession:
             self._add(
                 height - 1,
                 0,
-                "↑↓/jk rows  PgUp/PgDn  Home/End  Enter select  Esc cancel  Ctrl-X exit",
+                "↑↓ rows  PgUp/PgDn  Home/End  Enter select  Esc cancel  Ctrl-X exit",
                 self.curses.A_DIM,
             )
             self.screen.refresh()
             key = self.screen.getch()
             if key == CTRL_X:
                 self._request_exit()
-            if key in (27, ord("q")):
+            if key == 27:
                 return None
-            if not filtered:
-                if key in (self.curses.KEY_BACKSPACE, 127, 8):
-                    filter_text = filter_text[:-1]
-                elif 32 <= key <= 126:
-                    filter_text += chr(key)
+            if key in (self.curses.KEY_BACKSPACE, 127, 8):
+                filter_text = filter_text[:-1]
                 continue
-            if key in (self.curses.KEY_UP, ord("k")):
+            if 32 <= key <= 126:
+                filter_text += chr(key)
+                continue
+            if not filtered:
+                continue
+            if key == self.curses.KEY_UP:
                 selected_id = filtered[(index - 1) % len(filtered)].id
-            elif key in (self.curses.KEY_DOWN, ord("j")):
+            elif key == self.curses.KEY_DOWN:
                 selected_id = filtered[(index + 1) % len(filtered)].id
             elif key == self.curses.KEY_PPAGE:
                 selected_id = filtered[max(0, index - visible)].id
             elif key == self.curses.KEY_NPAGE:
                 selected_id = filtered[min(len(filtered) - 1, index + visible)].id
-            elif key in (self.curses.KEY_HOME, ord("g")):
+            elif key == self.curses.KEY_HOME:
                 selected_id = filtered[0].id
-            elif key in (self.curses.KEY_END, ord("G")):
+            elif key == self.curses.KEY_END:
                 selected_id = filtered[-1].id
             elif key in (10, 13, self.curses.KEY_ENTER):
                 return filtered[index]
-            elif key in (self.curses.KEY_BACKSPACE, 127, 8):
-                filter_text = filter_text[:-1]
-            elif 32 <= key <= 126:
-                filter_text += chr(key)
 
     def _activate_putio(self, url: str) -> None:
         while True:
@@ -1512,11 +1538,19 @@ class InteractiveSession:
         if folder is None or not self._confirm("put.io", folder.path):
             return
         while True:
-            self._draw_loading("Creating put.io transfer…")
             try:
-                completed = subprocess.run(
-                    putio_add_command(url, folder.id), capture_output=True, text=True, check=False
+                completed = self._run_cancellable_command(
+                    putio_add_command(url, folder.id),
+                    "Creating put.io transfer…",
+                    "Cancel put.io transfer creation?",
+                    "This stops the local put.io command. The transfer may already exist remotely.",
                 )
+            except CancelledError:
+                self.status = (
+                    "put.io transfer creation cancelled. Check put.io transfers; "
+                    "the request may already have been accepted."
+                )
+                return
             except OSError as error:
                 message = str(error)
             else:
@@ -1556,12 +1590,22 @@ class InteractiveSession:
             if key == ord("c"):
                 while True:
                     try:
-                        completed = subprocess.run(
+                        completed = self._run_cancellable_command(
                             putio_cancel_command(transfer_id),
-                            capture_output=True,
-                            text=True,
-                            check=False,
+                            "Cancelling put.io transfer…",
+                            "Stop put.io transfer cancellation?",
+                            (
+                                "This stops the local put.io command. The cancellation may already "
+                                "have been accepted remotely."
+                            ),
                         )
+                    except CancelledError:
+                        self.status = (
+                            f"Transfer {transfer_id} cancellation command stopped. "
+                            "Check put.io transfers; the cancellation may already have been "
+                            "accepted." + preference_notice
+                        )
+                        return
                     except OSError as error:
                         message = str(error)
                     else:

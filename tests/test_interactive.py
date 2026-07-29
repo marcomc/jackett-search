@@ -75,10 +75,13 @@ class InstallationTests(unittest.TestCase):
             )
             fake_docker.chmod(0o755)
 
-            environment = os.environ | {
-                "DOCKER_LOG": str(docker_log),
-                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-            }
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "DOCKER_LOG": str(docker_log),
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                }
+            )
             for target in (
                 "install",
                 "install-flaresolverr",
@@ -217,11 +220,14 @@ class InstallationTests(unittest.TestCase):
             fake_install.chmod(0o755)
             real_install = shutil.which("install")
             self.assertIsNotNone(real_install)
-            environment = os.environ | {
-                "INSTALL_COUNTER": str(install_counter),
-                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-                "REAL_INSTALL": str(real_install),
-            }
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "INSTALL_COUNTER": str(install_counter),
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                    "REAL_INSTALL": str(real_install),
+                }
+            )
 
             failed_upgrade = subprocess.run(
                 install_arguments,
@@ -1021,6 +1027,275 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertEqual(["torrent"], session._available_actions())
             self.assertEqual(set(), session.marked_indices)
 
+    def test_putio_is_only_offered_for_a_focused_magnet(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.results = [
+                {
+                    "Title": "Both URLs",
+                    "MagnetUri": "magnet:?xt=urn:btih:example",
+                    "Link": "http://jackett.local/dl/example",
+                }
+            ]
+            session._choose = mock.Mock(return_value="putio")
+            session._activate_putio = mock.Mock()
+            session._activate_default = mock.Mock()
+
+            with mock.patch.object(
+                interactive,
+                "available_clients",
+                return_value=[("putio", "put.io"), ("default", "System default application")],
+            ):
+                session.focused_action = "magnet"
+                session._activate_focused_action()
+
+            self.assertEqual(
+                mock.call(
+                    "Choose application",
+                    [("putio", "put.io"), ("default", "System default application")],
+                    None,
+                ),
+                session._choose.call_args,
+            )
+            session._activate_putio.assert_called_once_with("magnet:?xt=urn:btih:example")
+
+            session._choose.reset_mock(return_value=True)
+            session._choose.return_value = "default"
+            with mock.patch.object(
+                interactive,
+                "available_clients",
+                return_value=[("putio", "put.io"), ("default", "System default application")],
+            ):
+                session.focused_action = "torrent"
+                session._activate_focused_action()
+
+            self.assertEqual(
+                mock.call(
+                    "Choose application",
+                    [("default", "System default application")],
+                    None,
+                ),
+                session._choose.call_args,
+            )
+            session._activate_default.assert_called_once_with("http://jackett.local/dl/example")
+
+    def test_folder_filter_keeps_printable_navigation_keys_as_text(self):
+        class FakeScreen:
+            def __init__(self):
+                self.keys = iter((ord("q"), ord("j"), ord("k"), ord("g"), ord("G"), 10))
+
+            def getmaxyx(self):
+                return 24, 100
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *_arguments):
+                pass
+
+            def refresh(self):
+                pass
+
+            def getch(self):
+                return next(self.keys)
+
+        fake_curses = SimpleNamespace(
+            A_BOLD=0,
+            A_DIM=0,
+            A_REVERSE=0,
+            KEY_BACKSPACE=263,
+            KEY_DOWN=258,
+            KEY_END=360,
+            KEY_ENTER=343,
+            KEY_HOME=262,
+            KEY_NPAGE=338,
+            KEY_PPAGE=339,
+            KEY_UP=259,
+            error=RuntimeError,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            selected = interactive.PutioFolder(1, "qjkgG")
+            session.preferences.putio_last_folder_id = selected.id
+            session.screen = FakeScreen()
+            session.curses = fake_curses
+
+            self.assertEqual(
+                selected,
+                session._choose_folder([interactive.PutioFolder(0, "Root"), selected]),
+            )
+
+    def test_cancellable_command_stops_children_for_escape_and_ctrl_x(self):
+        class FakeScreen:
+            def __init__(self, key):
+                self.key = key
+                self.timeouts = []
+
+            def timeout(self, value):
+                self.timeouts.append(value)
+
+            def getch(self):
+                return self.key
+
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            for key, raised_exception in (
+                (27, interactive.CancelledError),
+                (interactive.CTRL_X, interactive.ExitInteractiveMode),
+            ):
+                session = interactive.InteractiveSession(
+                    interactive.SearchParams("Example"),
+                    lambda _params: [],
+                    config_path,
+                )
+                session.screen = FakeScreen(key)
+                session._draw_loading = mock.Mock()
+                session._confirm_search_transition = mock.Mock(return_value=True)
+                session._confirm_exit = mock.Mock(return_value=True)
+                process = FakeProcess()
+                with mock.patch.object(
+                    interactive.subprocess, "Popen", return_value=process
+                ), self.assertRaises(raised_exception):
+                    session._run_cancellable_command(
+                        ["putio", "transfers", "add"],
+                        "Creating put.io transfer…",
+                        "Cancel put.io transfer creation?",
+                        "This stops the local put.io command.",
+                    )
+
+                self.assertEqual(-15, process.returncode)
+                self.assertEqual(-1, session.screen.timeouts[-1])
+
+    def test_cancellable_command_collects_a_completed_command_output(self):
+        class FakeScreen:
+            def __init__(self):
+                self.timeouts = []
+
+            def timeout(self, value):
+                self.timeouts.append(value)
+
+            def getch(self):
+                return -1
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.screen = FakeScreen()
+            session._draw_loading = mock.Mock()
+
+            completed = session._run_cancellable_command(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; print('transfer'); print('warning', file=sys.stderr)",
+                ],
+                "Creating put.io transfer…",
+                "Cancel put.io transfer creation?",
+                "This stops the local put.io command.",
+            )
+
+            self.assertEqual(0, completed.returncode)
+            self.assertEqual("transfer\n", completed.stdout)
+            self.assertEqual("warning", completed.stderr)
+            self.assertEqual(-1, session.screen.timeouts[-1])
+
+    def test_cancelled_putio_transfer_reports_the_remote_state_risk(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session._discover_putio_folders = mock.Mock(
+                return_value=[interactive.PutioFolder(0, "Root")]
+            )
+            session._choose_folder = mock.Mock(return_value=interactive.PutioFolder(0, "Root"))
+            session._confirm = mock.Mock(return_value=True)
+            session._run_cancellable_command = mock.Mock(side_effect=interactive.CancelledError)
+
+            session._activate_putio("magnet:?xt=urn:btih:example")
+
+            self.assertIn("transfer creation cancelled", session.status)
+            self.assertIn("may already have been accepted", session.status)
+
+    def test_stopped_putio_transfer_cancellation_reports_the_remote_state_risk(self):
+        class FakeScreen:
+            def getmaxyx(self):
+                return 24, 100
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *_arguments):
+                pass
+
+            def refresh(self):
+                pass
+
+            def getch(self):
+                return ord("c")
+
+        fake_curses = SimpleNamespace(A_BOLD=0, A_DIM=0, KEY_ENTER=343, error=RuntimeError)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.screen = FakeScreen()
+            session.curses = fake_curses
+            session._run_cancellable_command = mock.Mock(side_effect=interactive.CancelledError)
+
+            session._post_submit_cancel(99, "Root")
+
+            self.assertEqual(
+                mock.call(
+                    interactive.putio_cancel_command(99),
+                    "Cancelling put.io transfer…",
+                    "Stop put.io transfer cancellation?",
+                    "This stops the local put.io command. The cancellation may already have "
+                    "been accepted remotely.",
+                ),
+                session._run_cancellable_command.call_args,
+            )
+            self.assertIn("cancellation command stopped", session.status)
+            self.assertIn("may already have been accepted", session.status)
+
     def test_result_table_matches_standard_columns_and_shows_action_focus(self):
         class FakeScreen:
             def __init__(self):
@@ -1146,6 +1421,7 @@ class InteractiveStateTests(unittest.TestCase):
             )
             session.screen = FakeScreen()
             session.curses = FakeCurses()
+            session._confirm_search_transition = mock.Mock(return_value=True)
             with mock.patch.object(interactive.subprocess, "Popen", return_value=FakeProcess()):
                 with self.assertRaises(interactive.CancelledError):
                     session._run_folder_command(["putio"], "Loading folders")
@@ -1248,9 +1524,9 @@ class InteractiveStateTests(unittest.TestCase):
             session._confirm = mock.Mock(return_value=True)
             session._draw_loading = mock.Mock()
             session._show_message = mock.Mock()
-            completed = SimpleNamespace(returncode=0, stderr="", stdout="{}")
+            completed = subprocess.CompletedProcess(["putio"], 0, "{}", "")
             with mock.patch.object(
-                interactive.subprocess, "run", return_value=completed
+                session, "_run_cancellable_command", return_value=completed
             ), mock.patch.object(
                 interactive, "update_toml_sections", side_effect=OSError("read-only config")
             ):
@@ -1274,7 +1550,8 @@ class InteractivePtyTests(unittest.TestCase):
             config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
             child_pid, master = pty.fork()
             if child_pid == 0:
-                environment = os.environ | {"HOME": str(home), "TERM": "xterm-256color"}
+                environment = os.environ.copy()
+                environment.update({"HOME": str(home), "TERM": "xterm-256color"})
                 os.chdir(ROOT)
                 os.execve(
                     sys.executable,
