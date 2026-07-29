@@ -71,7 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Retain the documented Python 3.8 runtime compatibility for cancellable
   put.io commands.
 - Keep Magnet and Torrent URL actions visible and focused in supported
-  80–142-column interactive terminals by compacting result columns.
+  80–142-column interactive terminals by compacting result columns while
+  preserving full result row numbers.
 
 ## [0.2.1] - 2026-04-29
 

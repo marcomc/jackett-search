@@ -773,8 +773,9 @@ class InteractiveSession:
         if width - 1 >= self._result_table_content_width(full):
             return full
 
+        compact_number_width = max(3, len(str(len(self.results))))
         compact_without_title = ResultTableLayout(
-            number_width=3,
+            number_width=compact_number_width,
             title_width=0,
             size_width=COMPACT_RESULT_SIZE_WIDTH,
             seeds_width=COMPACT_RESULT_NUMERIC_WIDTH,
