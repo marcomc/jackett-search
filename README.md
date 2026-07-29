@@ -637,12 +637,12 @@ immediately. Cancelling either confirmation keeps the current search unchanged.
 | `Ctrl-C` | Exit interactive mode immediately |
 | `Esc` | Confirm cancellation of a running search or return to the search form |
 
-The table uses the same title, size, numeric, DLF, and tracker column widths
-and semantic colours as normal table output. Its action slots make URL support
-explicit: `M magnet` and `T torrent` are available URLs, `M —` or `T —` means
-that URL type is absent, and brackets mark the action selected with `←`/`→` or
-`h`/`l`. The table uses a viewport sized to the terminal and redraws when the
-terminal is resized.
+On terminals wide enough for the full table, its title, size, numeric, DLF,
+and tracker columns use the same widths and semantic colours as normal table
+output. At the supported 80-column minimum it compacts those columns and shows
+`M/T` action cells (`[M]` or `[T]` marks focus), so URL availability and the
+selected action always remain visible. The table uses a viewport sized to the
+terminal and redraws when the terminal is resized.
 
 ### Search progress
 

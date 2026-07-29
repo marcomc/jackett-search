@@ -62,6 +62,28 @@ RESULT_DLF_WIDTH = 5
 RESULT_TRACKER_WIDTH = 20
 RESULT_MAGNET_ACTION_WIDTH = 11
 RESULT_TORRENT_ACTION_WIDTH = 12
+COMPACT_RESULT_TITLE_MIN_WIDTH = 14
+COMPACT_RESULT_SIZE_WIDTH = 8
+COMPACT_RESULT_NUMERIC_WIDTH = 4
+COMPACT_RESULT_DLF_WIDTH = 5
+COMPACT_RESULT_TRACKER_WIDTH = 8
+
+
+@dataclass(frozen=True)
+class ResultTableLayout:
+    """Column widths for either the full or compact results table."""
+
+    number_width: int
+    title_width: int
+    size_width: int
+    seeds_width: int
+    leechers_width: int
+    grabs_width: int
+    dlf_width: int
+    tracker_width: int
+    magnet_action_width: int
+    torrent_action_width: int
+    compact_actions: bool
 
 
 class InteractiveUnavailableError(RuntimeError):
@@ -686,13 +708,120 @@ class InteractiveSession:
     def _colour_attribute(self, name: str) -> int:
         return self.colour_attributes.get(name, 0)
 
-    def _action_label(self, action: str, available: bool, selected: bool) -> str:
+    @staticmethod
+    def _result_table_content_width(layout: ResultTableLayout) -> int:
+        """Return the exact number of columns occupied by a result row."""
+        if layout.compact_actions:
+            return (
+                layout.number_width
+                + 1
+                + layout.title_width
+                + 1
+                + layout.size_width
+                + 1
+                + layout.seeds_width
+                + 1
+                + layout.leechers_width
+                + 1
+                + layout.grabs_width
+                + 1
+                + layout.dlf_width
+                + 1
+                + layout.tracker_width
+                + 1
+                + layout.magnet_action_width
+                + 1
+                + layout.torrent_action_width
+            )
+        return (
+            layout.number_width
+            + 1
+            + layout.title_width
+            + 1
+            + layout.size_width
+            + 2
+            + layout.seeds_width
+            + layout.leechers_width
+            + layout.grabs_width
+            + 2
+            + layout.dlf_width
+            + 2
+            + layout.tracker_width
+            + 2
+            + layout.magnet_action_width
+            + 1
+            + layout.torrent_action_width
+        )
+
+    def _result_table_layout(self, width: int) -> ResultTableLayout:
+        """Keep URL actions visible in every terminal accepted by the TUI."""
+        full = ResultTableLayout(
+            number_width=4,
+            title_width=RESULT_TITLE_WIDTH,
+            size_width=RESULT_SIZE_WIDTH,
+            seeds_width=RESULT_SEEDS_WIDTH,
+            leechers_width=RESULT_LEECHERS_WIDTH,
+            grabs_width=RESULT_GRABS_WIDTH,
+            dlf_width=RESULT_DLF_WIDTH,
+            tracker_width=RESULT_TRACKER_WIDTH,
+            magnet_action_width=RESULT_MAGNET_ACTION_WIDTH,
+            torrent_action_width=RESULT_TORRENT_ACTION_WIDTH,
+            compact_actions=False,
+        )
+        # ``_add`` deliberately leaves the rightmost terminal cell unused, so
+        # the full layout needs one extra available terminal column.
+        if width - 1 >= self._result_table_content_width(full):
+            return full
+
+        compact_without_title = ResultTableLayout(
+            number_width=3,
+            title_width=0,
+            size_width=COMPACT_RESULT_SIZE_WIDTH,
+            seeds_width=COMPACT_RESULT_NUMERIC_WIDTH,
+            leechers_width=COMPACT_RESULT_NUMERIC_WIDTH,
+            grabs_width=COMPACT_RESULT_NUMERIC_WIDTH,
+            dlf_width=COMPACT_RESULT_DLF_WIDTH,
+            tracker_width=COMPACT_RESULT_TRACKER_WIDTH,
+            magnet_action_width=3,
+            torrent_action_width=3,
+            compact_actions=True,
+        )
+        title_width = max(
+            COMPACT_RESULT_TITLE_MIN_WIDTH,
+            min(
+                RESULT_TITLE_WIDTH,
+                width - 1 - self._result_table_content_width(compact_without_title),
+            ),
+        )
+        return ResultTableLayout(
+            number_width=compact_without_title.number_width,
+            title_width=title_width,
+            size_width=compact_without_title.size_width,
+            seeds_width=compact_without_title.seeds_width,
+            leechers_width=compact_without_title.leechers_width,
+            grabs_width=compact_without_title.grabs_width,
+            dlf_width=compact_without_title.dlf_width,
+            tracker_width=compact_without_title.tracker_width,
+            magnet_action_width=compact_without_title.magnet_action_width,
+            torrent_action_width=compact_without_title.torrent_action_width,
+            compact_actions=True,
+        )
+
+    def _action_label(self, action: str, available: bool, selected: bool, compact: bool) -> str:
         """Render a stable-width action label with an unambiguous focus state."""
+        if compact:
+            label = action[0].upper() if available else "—"
+            return f"[{label}]" if selected else f" {label} "
         label = f"{action[0].upper()} {action}" if available else f"{action[0].upper()} —"
         return f"[{label}]" if selected else label
 
     def _draw_action_cell(
-        self, row: int, column: int, result: Dict[str, Any], selected: bool
+        self,
+        row: int,
+        column: int,
+        result: Dict[str, Any],
+        selected: bool,
+        layout: ResultTableLayout,
     ) -> None:
         """Draw magnet and torrent availability separately so focus is obvious."""
         row_attribute = self.curses.A_REVERSE if selected else 0
@@ -700,19 +829,19 @@ class InteractiveSession:
             (
                 "magnet",
                 bool(result.get("MagnetUri")),
-                RESULT_MAGNET_ACTION_WIDTH,
+                layout.magnet_action_width,
                 "cyan",
             ),
             (
                 "torrent",
                 bool(result.get("Link")),
-                RESULT_TORRENT_ACTION_WIDTH,
+                layout.torrent_action_width,
                 "yellow",
             ),
         )
         for action, available, action_width, colour in action_specs:
             focused = selected and self.focused_action == action and available
-            label = self._action_label(action, available, focused)
+            label = self._action_label(action, available, focused, layout.compact_actions)
             style = self._colour_attribute(colour) if available else self.curses.A_DIM
             if focused:
                 style |= self.curses.A_BOLD | getattr(self.curses, "A_UNDERLINE", 0)
@@ -729,14 +858,23 @@ class InteractiveSession:
             pass
         self._clear()
         height, width = self.screen.getmaxyx()
+        layout = self._result_table_layout(width)
         heading = f"jackett-search interactive — {len(self.results)} result(s)"
         self._add(0, 0, heading, self.curses.A_BOLD)
-        header = (
-            f"{'#':<4} {'Title':<{RESULT_TITLE_WIDTH}} {'Size':>{RESULT_SIZE_WIDTH}}  "
-            f"{'S':>{RESULT_SEEDS_WIDTH}}{'L':>{RESULT_LEECHERS_WIDTH}}"
-            f"{'G':>{RESULT_GRABS_WIDTH}}  {'DLF':>{RESULT_DLF_WIDTH}}  "
-            f"{'Tracker':<{RESULT_TRACKER_WIDTH}}  DL"
-        )
+        if layout.compact_actions:
+            header = (
+                f"{'#':<{layout.number_width}} {'Title':<{layout.title_width}} "
+                f"{'Size':>{layout.size_width}} {'S':>{layout.seeds_width}} "
+                f"{'L':>{layout.leechers_width}} {'G':>{layout.grabs_width}} "
+                f"{'DLF':>{layout.dlf_width}} {'Tracker':<{layout.tracker_width}} M/T"
+            )
+        else:
+            header = (
+                f"{'#':<{layout.number_width}} {'Title':<{layout.title_width}} "
+                f"{'Size':>{layout.size_width}}  {'S':>{layout.seeds_width}}"
+                f"{'L':>{layout.leechers_width}}{'G':>{layout.grabs_width}}  "
+                f"{'DLF':>{layout.dlf_width}}  {'Tracker':<{layout.tracker_width}}  DL"
+            )
         self._add(1, 0, header, self.curses.A_BOLD)
         self._add(2, 0, "─" * (width - 1), self.curses.A_DIM)
         visible = self._page_size()
@@ -748,9 +886,11 @@ class InteractiveSession:
             row = 3 + offset
             selected = index == self.cursor_index
             row_attribute = self.curses.A_REVERSE if selected else 0
-            raw_title = str(result.get("Title") or "Untitled")[: RESULT_TITLE_WIDTH - 2]
-            title = f"{raw_title:<{RESULT_TITLE_WIDTH}}"
-            size = f"{self._format_size(result.get('Size')):>{RESULT_SIZE_WIDTH}}"
+            number = _truncate(str(index + 1), layout.number_width)
+            raw_title = _truncate(str(result.get("Title") or "Untitled"), layout.title_width)
+            title = f"{raw_title:<{layout.title_width}}"
+            size_text = _truncate(self._format_size(result.get("Size")), layout.size_width)
+            size = f"{size_text:>{layout.size_width}}"
             seeds = int(result.get("Seeders") or 0)
             leechers = int(result.get("Peers") or 0)
             grabs = int(result.get("Grabs") or 0)
@@ -769,25 +909,39 @@ class InteractiveSession:
                 seed_attribute = self._colour_attribute("green") | self.curses.A_BOLD
             elif seeds >= 10:
                 seed_attribute = self._colour_attribute("yellow")
-            tracker = str(result.get("Tracker") or "")[:RESULT_TRACKER_WIDTH]
-            cells = (
-                (f"{index + 1:<4} ", 0),
-                (
-                    f"{title} ",
-                    getattr(self.curses, "A_UNDERLINE", 0) if result.get("Details") else 0,
-                ),
-                (f"{size}  ", 0),
-                (f"{seeds:>{RESULT_SEEDS_WIDTH}}", seed_attribute),
-                (f"{leechers:>{RESULT_LEECHERS_WIDTH}}", self.curses.A_DIM),
-                (f"{grabs:>{RESULT_GRABS_WIDTH}}  ", self.curses.A_DIM),
-                (f"{dlf:>{RESULT_DLF_WIDTH}}  ", dlf_attribute),
-                (f"{tracker:<{RESULT_TRACKER_WIDTH}}  ", 0),
-            )
+            tracker = _truncate(str(result.get("Tracker") or ""), layout.tracker_width)
+            seeds_text = _truncate(str(seeds), layout.seeds_width)
+            leechers_text = _truncate(str(leechers), layout.leechers_width)
+            grabs_text = _truncate(str(grabs), layout.grabs_width)
+            dlf_text = _truncate(dlf, layout.dlf_width)
+            title_attribute = getattr(self.curses, "A_UNDERLINE", 0) if result.get("Details") else 0
+            if layout.compact_actions:
+                cells = (
+                    (f"{number:<{layout.number_width}} ", 0),
+                    (f"{title} ", title_attribute),
+                    (f"{size} ", 0),
+                    (f"{seeds_text:>{layout.seeds_width}} ", seed_attribute),
+                    (f"{leechers_text:>{layout.leechers_width}} ", self.curses.A_DIM),
+                    (f"{grabs_text:>{layout.grabs_width}} ", self.curses.A_DIM),
+                    (f"{dlf_text:>{layout.dlf_width}} ", dlf_attribute),
+                    (f"{tracker:<{layout.tracker_width}} ", 0),
+                )
+            else:
+                cells = (
+                    (f"{number:<{layout.number_width}} ", 0),
+                    (f"{title} ", title_attribute),
+                    (f"{size}  ", 0),
+                    (f"{seeds_text:>{layout.seeds_width}}", seed_attribute),
+                    (f"{leechers_text:>{layout.leechers_width}}", self.curses.A_DIM),
+                    (f"{grabs_text:>{layout.grabs_width}}  ", self.curses.A_DIM),
+                    (f"{dlf_text:>{layout.dlf_width}}  ", dlf_attribute),
+                    (f"{tracker:<{layout.tracker_width}}  ", 0),
+                )
             column = 0
             for text, attribute in cells:
                 self._add(row, column, text, row_attribute | attribute)
                 column += len(text)
-            self._draw_action_cell(row, column, result, selected)
+            self._draw_action_cell(row, column, result, selected, layout)
         self._add(
             height - 3,
             0,

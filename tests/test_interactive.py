@@ -1371,6 +1371,70 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertIn("[T torrent] ", rerendered)
             self.assertEqual("torrent", session.focused_action)
 
+    def test_result_table_keeps_url_actions_visible_at_minimum_width(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def getmaxyx(self):
+                return 24, interactive.MIN_WIDTH
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *arguments):
+                self.calls.append(arguments)
+
+            def refresh(self):
+                pass
+
+        fake_curses = SimpleNamespace(
+            A_BOLD=1,
+            A_DIM=2,
+            A_REVERSE=4,
+            A_UNDERLINE=8,
+            curs_set=mock.Mock(),
+            error=RuntimeError,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.screen = FakeScreen()
+            session.curses = fake_curses
+            session.colour_attributes = {"cyan": 16, "yellow": 64}
+            session.results = [
+                {
+                    "Title": "Both URLs remain selectable at a narrow terminal width",
+                    "Size": 1024**9,
+                    "Seeders": 100000,
+                    "Peers": 10000,
+                    "Grabs": 10000,
+                    "DownloadVolumeFactor": 123456.0,
+                    "Tracker": "A tracker name that is deliberately too long",
+                    "MagnetUri": "magnet:?xt=urn:btih:one",
+                    "Link": "https://example.test/file.torrent",
+                }
+            ]
+
+            session._draw_results()
+
+            rendered = [arguments[2] for arguments in session.screen.calls]
+            self.assertTrue(any("M/T" in text for text in rendered))
+            self.assertIn("[M]", rendered)
+            self.assertIn(" T ", rendered)
+            torrent_call = next(
+                arguments
+                for arguments in session.screen.calls
+                if arguments[0] == 3 and arguments[2] == " T "
+            )
+            self.assertEqual(76, torrent_call[1])
+            self.assertLess(torrent_call[1] + len(torrent_call[2]), interactive.MIN_WIDTH)
+
     def test_cancelling_folder_discovery_restores_blocking_input(self):
         class FakeScreen:
             def __init__(self):
