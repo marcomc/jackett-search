@@ -73,3 +73,30 @@ Planned improvements, roughly prioritised.
   - Localize labels, prompts, confirmation panels, help, errors, units, and
     plural-sensitive result counts without changing machine-readable output.
   - Add coverage for the English fallback and at least one non-English locale.
+
+- [ ] **Container-local Jackett torrent-link delivery** — support local torrent
+  download clients that can reach Jackett's authenticated `/dl/...` proxy,
+  without exposing PiServ or its API key to remote services.
+  - Define client capabilities that distinguish a portable magnet URI from a
+    Jackett-local torrent download link.
+  - Provide a documented Docker-network configuration in which the downloader
+    reaches Jackett through its internal service DNS name (for example,
+    `http://jackett:9117`), rather than `piserv.home.arpa`.
+  - Verify an end-to-end container-to-container download from a returned
+    Jackett `Link`, including redirects and tracker-side retrieval.
+  - Document that remote clients such as put.io cannot use this private link.
+
+- [ ] **Torrent-payload delivery for remote download clients** — fetch a
+  selected Jackett `Link` locally, then hand its `.torrent` file to a client
+  that supports file submission instead of incorrectly sending the private
+  Jackett URL to that client.
+  - Define one client-adapter contract for portable magnet URIs and another for
+    locally retrieved torrent-file payloads, ready for future batch actions.
+  - Download and validate the returned torrent payload without logging its URL,
+    tracker credentials, or metadata.
+  - Implement put.io torrent-file upload through its supported upload API,
+    with an explicit secure authentication source that is never written to
+    `jackett-search` configuration or output.
+  - Add adapters and documented configuration for other torrent clients that
+    accept a local `.torrent` file, plus integration tests using a local HTTP
+    fixture and mocked client endpoint.
