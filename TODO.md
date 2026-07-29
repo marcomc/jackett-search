@@ -25,7 +25,78 @@ Planned improvements, roughly prioritised.
   TTL to avoid hammering indexers on repeated identical searches.
 - [ ] **Colour theme option** — `--no-colour` flag to disable ANSI output
   even on a TTY (for terminals that support OSC 8 but not 256-colour).
-- [ ] **Test suite** — unit tests for `parse_sort_spec`, `make_comparator`,
-  `format_size`, and the config loader.
+- [x] **Core test suite** — dependency-free unit coverage for interactive
+  preferences/history, client availability, put.io command construction,
+  folder parsing, result-action state, CLI guardrails, sorting, formatting, and
+  config loading.
 - [ ] **Configurable default sort** — allow `default_sort` to be set in the
   config file so users don't have to pass `--sort` every time.
+- [ ] **Configurable interactive clients** — add documented command templates
+  for additional local clients such as qBittorrent, Transmission, and Deluge,
+  while retaining runtime availability checks and confirmation before launch.
+- [ ] **Interactive batch submission** — expose marked result rows with a
+  review screen, then submit every marked result to one chosen client and one
+  destination. The current result-state model already reserves marked rows for
+  this extension.
+
+## Propositions
+
+- [ ] **Per-invocation Jackett connection overrides** — add `--url`,
+  `--api-key`, and `--config` CLI options, in that priority order, so each
+  invocation can select a Jackett endpoint or configuration without changing
+  the default config file.
+  - Define how each flag overrides values loaded from the selected config.
+  - Make `--config` select the config file before applying endpoint and API-key
+    overrides, while preserving the existing first-match fallback when omitted.
+  - Update the README usage and examples, and add coverage for the resolution
+    precedence and missing-value errors.
+
+- [ ] **Prioritized multi-server Jackett failover** — allow the CLI to know
+  about multiple Jackett servers, query them in priority order, and continue
+  to the next server when the current server is unavailable or returns no
+  usable data.
+  - Decide whether server definitions belong in one ordered config file, in
+    multiple config files, or support both without making selection ambiguous.
+  - Define failure and no-data semantics, including whether results from a
+    successful fallback server replace or merge with earlier partial results.
+  - Keep per-server URLs and API keys isolated, and preserve safe handling of
+    credentials in diagnostics and output.
+  - Update the README usage and examples, and add tests for priority ordering,
+    unavailable servers, empty responses, and successful fallback.
+
+- [ ] **Localized interactive interface** — make the interactive TUI and
+  user-facing CLI messages translatable while retaining English as the default.
+  - Define an explicit locale-selection and fallback contract for macOS and
+    Linux, without relying on third-party dependencies.
+  - Move user-facing strings behind a standard-library-compatible message
+    catalog or equivalent translation boundary.
+  - Localize labels, prompts, confirmation panels, help, errors, units, and
+    plural-sensitive result counts without changing machine-readable output.
+  - Add coverage for the English fallback and at least one non-English locale.
+
+- [ ] **Container-local Jackett torrent-link delivery** — support local torrent
+  download clients that can reach Jackett's authenticated `/dl/...` proxy,
+  without exposing PiServ or its API key to remote services.
+  - Define client capabilities that distinguish a portable magnet URI from a
+    Jackett-local torrent download link.
+  - Provide a documented Docker-network configuration in which the downloader
+    reaches Jackett through its internal service DNS name (for example,
+    `http://jackett:9117`), rather than `piserv.home.arpa`.
+  - Verify an end-to-end container-to-container download from a returned
+    Jackett `Link`, including redirects and tracker-side retrieval.
+  - Document that remote clients such as put.io cannot use this private link.
+
+- [ ] **Torrent-payload delivery for remote download clients** — fetch a
+  selected Jackett `Link` locally, then hand its `.torrent` file to a client
+  that supports file submission instead of incorrectly sending the private
+  Jackett URL to that client.
+  - Define one client-adapter contract for portable magnet URIs and another for
+    locally retrieved torrent-file payloads, ready for future batch actions.
+  - Download and validate the returned torrent payload without logging its URL,
+    tracker credentials, or metadata.
+  - Implement put.io torrent-file upload through its supported upload API,
+    with an explicit secure authentication source that is never written to
+    `jackett-search` configuration or output.
+  - Add adapters and documented configuration for other torrent clients that
+    accept a local `.torrent` file, plus integration tests using a local HTTP
+    fixture and mocked client endpoint.

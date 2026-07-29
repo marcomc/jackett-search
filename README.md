@@ -1,8 +1,9 @@
 # jackett-search
 
-A fast, non-interactive CLI tool that queries a local [Jackett](https://github.com/Jackett/Jackett)
+A fast CLI tool that queries a local [Jackett](https://github.com/Jackett/Jackett)
 instance and prints torrent search results to stdout — with colour, clickable
-links, flexible sorting, and JSON output for scripting and AI agents.
+links, flexible sorting, JSON output, and an optional dependency-free
+interactive terminal interface.
 
 ## Table of Contents
 
@@ -13,10 +14,13 @@ links, flexible sorting, and JSON output for scripting and AI agents.
 - [FlareSolverr Setup](#flaresolverr-setup)
 - [Service Control](#service-control)
 - [Usage](#usage)
+- [Interactive mode](#interactive-mode)
 - [JSON output fields](#json-output-fields)
 - [Using with an AI agent](#using-with-an-ai-agent)
 - [How it works](#how-it-works)
 - [Notes](#notes)
+- [Development](#development)
+- [License](#license)
 
 ## Why
 
@@ -32,6 +36,7 @@ API. `jackett-search` does exactly that.
 | Python | 3.8+ | `brew install python` |
 | Jackett | any | `brew install jackett` or `make install-jackett` |
 | Docker Desktop | current | `brew install --cask docker` |
+| put.io CLI | optional, interactive transfers | `brew install putdotio/tap/putio-cli` |
 
 No external Python packages are required — the script uses the standard library only.
 
@@ -90,6 +95,34 @@ cd jackett-search
 make install
 ```
 
+`make install` creates a standalone runtime, not a link back to this checkout:
+
+```text
+~/.local/lib/jackett-search/jackett-search
+~/.local/lib/jackett-search/interactive.py
+~/.local/bin/jackett-search -> ~/.local/lib/jackett-search/jackett-search
+```
+
+You may move or delete the source checkout after installation. Rerun
+`make install` from a newer checkout to upgrade the installed runtime; use
+`make uninstall` with the same installation overrides to remove the launcher
+and runtime files. Ensure
+`~/.local/bin` is on your `PATH`.
+
+The install location is configurable with one prefix parameter:
+
+```sh
+# Default: ~/.local/bin and ~/.local/lib/jackett-search
+make install
+
+# A different user-owned prefix
+make install INSTALL_PREFIX="$HOME/apps"
+make uninstall INSTALL_PREFIX="$HOME/apps"
+```
+
+`INSTALL_DIR` and `INSTALL_LIB_DIR` remain available as independent overrides
+for an unusual layout.
+
 During `make install`, `jackett-search` now checks whether the bundled Docker
 Compose files are already present in `~/.config/jackett-search/`. In an
 interactive terminal it offers to install:
@@ -100,6 +133,7 @@ interactive terminal it offers to install:
 The FlareSolverr installer:
 
 - installs `flaresolverr-compose.yml` into `~/.config/jackett-search/`
+- creates the shared `jackett-search` Docker network when Docker is running
 - prints the manual start command
 - starts FlareSolverr immediately when Docker is already running
 - otherwise tells you to start Docker Desktop first and rerun the printed command
@@ -108,8 +142,8 @@ The Jackett installer:
 
 - installs `jackett-compose.yml` into `~/.config/jackett-search/`
 - creates persistent Docker config/download directories under `~/.config/jackett-search/`
-- copies an existing native macOS Jackett config into the Docker config directory the first time, if found
-- rewrites Jackett's FlareSolverr URL to `http://host.docker.internal:8191` so Docker Jackett can reach the host-published FlareSolverr service
+- copies an existing native macOS Jackett config into the Docker config directory the first time, excluding `._*` and `.DS_Store` metadata
+- rewrites Jackett's FlareSolverr URL to `http://flaresolverr:8191` through the shared Docker network
 - rewrites Jackett's bind address to `0.0.0.0` so the Docker-published port is reachable from the host
 - pulls the latest Jackett image before starting it
 - prints the manual start command with the required environment variables
@@ -131,6 +165,8 @@ That installs this Compose file:
 and starts it with:
 
 ```sh
+docker network inspect jackett-search >/dev/null 2>&1 \
+  || docker network create jackett-search
 docker compose -f ~/.config/jackett-search/flaresolverr-compose.yml up -d
 ```
 
@@ -138,15 +174,40 @@ The bundled FlareSolverr service uses Docker's `unless-stopped` restart policy,
 so once Docker Desktop is running again it will come back automatically.
 The bundled Compose files also use distinct Compose project names, so managing
 Jackett does not produce orphan-container warnings for FlareSolverr and vice versa.
+They join the persistent `jackett-search` network, where Docker DNS resolves
+the FlareSolverr service as `flaresolverr` on both macOS and Linux.
 If you previously used an older revision of this repo that created plain
 `jackett` or `flaresolverr` containers, the installers remove those legacy
 containers before starting the Compose-managed services.
 
+### Updating an existing Docker installation
+
+`make install` preserves existing Compose files. To replace them with the
+current bundled definitions, run these commands in order:
+
+```sh
+make install-flaresolverr
+make install-jackett
+```
+
+They create the shared network, rewrite the Jackett endpoint, remove macOS
+metadata sidecars, and restart the services. These commands intentionally
+replace the installed companion Compose files. Keep a copy first if you have
+made local changes to them.
+
 Or manually:
 
 ```sh
-chmod +x jackett-search
-sudo ln -sf "$PWD/jackett-search" /usr/local/bin/jackett-search
+install -d ~/.local/lib/jackett-search ~/.local/bin
+install -m 755 jackett-search ~/.local/lib/jackett-search/jackett-search
+install -m 644 interactive.py ~/.local/lib/jackett-search/interactive.py
+ln -sf ~/.local/lib/jackett-search/jackett-search ~/.local/bin/jackett-search
+```
+
+For a system-wide installation, choose the prefix explicitly:
+
+```sh
+sudo make install INSTALL_PREFIX=/usr/local
 ```
 
 ### 4 — Configure Jackett to use FlareSolverr
@@ -166,7 +227,7 @@ http://127.0.0.1:8191
 For Docker Jackett installed with this repo:
 
 ```text
-http://host.docker.internal:8191
+http://flaresolverr:8191
 ```
 
 Then click:
@@ -247,11 +308,18 @@ builds as `Invalid url: 'http://:9117/'`. Using `0.0.0.0` keeps
 `http://127.0.0.1:9117` reachable from the host through Docker's published
 port.
 
+The migration excludes macOS AppleDouble (`._*`) and Finder (`.DS_Store`)
+metadata. They are not Jackett configuration and can corrupt its .NET key ring
+when copied into `DataProtection`.
+
 ### Manual Docker setup
 
 If you want to start Docker Jackett manually after installation, run:
 
 ```sh
+docker network inspect jackett-search >/dev/null 2>&1 \
+  || docker network create jackett-search
+
 PUID="$(id -u)" \
 PGID="$(id -g)" \
 TZ="${TZ:-UTC}" \
@@ -281,7 +349,7 @@ docker compose -f ~/.config/jackett-search/jackett-compose.yml logs --tail=100
 Then open:
 
 ```text
-http://127.0.0.1:9117/UI/
+http://127.0.0.1:9117/
 ```
 
 If you are switching from a Homebrew Jackett install, stop the native service
@@ -345,6 +413,8 @@ This installs:
 Then either let the target start it automatically, or start it yourself:
 
 ```sh
+docker network inspect jackett-search >/dev/null 2>&1 \
+  || docker network create jackett-search
 docker compose -f ~/.config/jackett-search/flaresolverr-compose.yml up -d
 ```
 
@@ -403,7 +473,7 @@ Then verify in Jackett WebUI that:
 
 - the FlareSolverr URL is correct for your Jackett mode:
 - native Jackett: `http://127.0.0.1:8191`
-- Docker Jackett: `http://host.docker.internal:8191`
+- Docker Jackett: `http://flaresolverr:8191`
 - you clicked `Apply server settings`
 - the affected indexer test now passes
 
@@ -443,9 +513,11 @@ Filter:
                         (mutually exclusive with --magnets-only)
 
 Output:
+  --interactive           Open a full-screen interactive session (TTY only)
   --json                Emit results as a JSON array
   --limit N             Cap output at N results
   --magnet N            Print just the magnet URI for result #N (1-based)
+  --clear-history       Delete persisted interactive query history and exit
 
 Sort:
   --sort FIELDS         Comma-separated sort fields (default: seeders)
@@ -506,6 +578,138 @@ jackett-search --timeout 30 "<placeholder>"
 # combine flags
 jackett-search --magnets-only --sort "dlf,seeders" --limit 10 --json "<placeholder>"
 ```
+
+## Interactive mode
+
+`--interactive` starts a dependency-free full-screen TUI for macOS and Linux
+terminals with `curses` support. It requires interactive stdin and stdout, so
+it cannot be piped or redirected. Normal table, JSON, and `--magnet` output
+remain unchanged.
+
+Start a session with an initial query:
+
+```sh
+jackett-search --interactive "<placeholder>"
+```
+
+Or start in the search form, which lets you edit the query, sort order, limit,
+timeout, and magnet/torrent filter before searching:
+
+```sh
+jackett-search --interactive
+```
+
+`Sort` and `Filter` are selectors: use Left/Right (or Up/Down) to cycle valid
+options. `Limit (results)` and `Timeout (seconds)` accept digits only; use
+`↑`/`k` to increment or `↓`/`j` to decrement them. Values never fall below
+zero. Leave `Limit` empty for no result cap; incrementing a blank Limit starts
+at `1`. A compound sort passed on the command line is preserved for its initial
+search; the first Sort-selector change switches to the first or last supported
+single-field sort, according to direction.
+
+CLI search flags provide initial values when a query is supplied:
+
+```sh
+jackett-search --interactive --magnets-only --sort "dlf,seeders" --limit 30 "<placeholder>"
+```
+
+### Navigation
+
+Esc always presents a confirmation before cancelling an in-progress search or
+leaving completed results for the search form. `Ctrl-X` presents an exit
+confirmation from any TUI screen, including editable forms; `Ctrl-C` exits
+immediately. Cancelling either confirmation keeps the current search unchanged.
+
+| Key | Action |
+| --- | --- |
+| `↑`/`↓`, `j`/`k` | Move between result rows |
+| `←`/`→`, `h`/`l` | Focus the Magnet or Torrent action |
+| `PageUp`/`PageDown` | Move one page |
+| `Home`/`End`, `g`/`G` | Jump to the first or last row |
+| `Ctrl-U`/`Ctrl-D` | Move half a page |
+| `Enter` | Choose a client and confirm the focused action |
+| `c` | Copy the focused URL to the system clipboard |
+| `n` | Open a new search form, preserving previous values |
+| `r` | Repeat the current search |
+| `?` | Show in-session help |
+| `q` | Exit from the results view |
+| `Ctrl-X` | Confirm exit from any TUI screen, including forms |
+| `Ctrl-C` | Exit interactive mode immediately |
+| `Esc` | Confirm cancellation of a running search or return to the search form |
+
+On terminals wide enough for the full table, its title, size, numeric, DLF,
+and tracker columns use the same widths and semantic colours as normal table
+output. At the supported 80-column minimum it compacts those columns and shows
+`M/T` action cells (`[M]` or `[T]` marks focus), so URL availability and the
+selected action always remain visible. The table uses a viewport sized to the
+terminal and redraws when the terminal is resized.
+
+### Search progress
+
+While configured indexers are being discovered, the TUI displays a spinner.
+Once discovery completes, its progress bar shows completed indexer requests out
+of the actual configured total, including the number still outstanding. An
+indexer that fails or reaches its timeout counts as complete because its request
+has finished; this is request completion, not an estimate of result quality.
+
+### Download clients
+
+The client picker exposes only commands available on `PATH`:
+
+- **put.io** — shown when the `putio` CLI is installed for a selected Magnet
+  URL. A selected Torrent URL is a Jackett retrieval link and remains available
+  only to the system-default local client until torrent-payload delivery is
+  implemented.
+- **System default application** — `open` on macOS or `xdg-open` on Linux.
+
+Every client action requires confirmation. For put.io, the destination picker
+discovers visible folders recursively from the live account, always includes
+`Root`, supports incremental filtering, and displays nested folders as paths.
+While filtering, every printable key is filter text—including `j`, `k`, `q`,
+`g`, and `G`; use arrows, PageUp/PageDown, Home/End, Escape, or Ctrl-X for
+navigation and cancellation. The selected Magnet URL is submitted with an
+argument list equivalent to:
+
+```sh
+putio transfers add --url "<selected-url>" --save-parent-id "<folder-id>" --output json
+```
+
+When put.io returns a transfer ID, the TUI immediately offers `c` to cancel
+that transfer. This is an undo after submission; cancelling at the confirmation
+screen prevents submission entirely. Escape during creation or cancellation
+confirms whether to stop the local command; the remote service may already have
+accepted that request, so check its transfer list after cancellation.
+
+### Interactive preferences and history
+
+Interactive settings live in the active `config.toml`, without duplicating the
+Jackett API key:
+
+```toml
+[interactive]
+persist_query_history = true
+history_limit = 50
+last_client = "putio"
+
+[interactive.clients.putio]
+last_folder_id = 123456789 # example folder ID
+```
+
+`last_client` and `last_folder_id` are written after successful actions. The
+folder ID is revalidated against the live put.io folder list before use; if it
+no longer exists, `Root` is selected instead.
+
+Search history is saved beside the active config as `history.json`, with mode
+`0600`. It contains only query form settings—never the Jackett API key, Magnet
+URLs, result data, or transfer IDs. Set `persist_query_history = false` to keep
+history only for the current TUI session. Clear saved history at any time:
+
+```sh
+jackett-search --clear-history
+```
+
+Future work for configurable third-party clients and explicit multi-result
+batch submission is tracked in [`TODO.md`](TODO.md).
 
 ### JSON output fields
 

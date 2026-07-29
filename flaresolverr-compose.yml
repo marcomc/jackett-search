@@ -7,4 +7,11 @@ services:
       - "8191:8191"
     environment:
       LOG_LEVEL: info
+    networks:
+      - jackett-search
     restart: unless-stopped
+
+networks:
+  jackett-search:
+    external: true
+    name: jackett-search

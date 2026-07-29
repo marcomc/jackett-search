@@ -5,9 +5,74 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-07-29 - Interactive search mode
 
-_No changelog items yet for this version._
+### Added
+
+- Added version 0.3.0's dependency-free full-screen interactive search mode
+  using the Python standard library's `curses` support.
+- Added an interactive search form, result navigation, viewport paging, resize
+  handling, keyboard help, URL copying, session search history, and configurable
+  persistent query history.
+- Added interactive actions for discovered put.io CLI and system-default
+  handlers, including live recursive folder discovery, confirmation, and
+  immediate put.io transfer cancellation when an ID is returned.
+- Added a live interactive search spinner and a determinate progress bar based
+  on completed Jackett indexer requests.
+- Added a dependency-free `unittest` suite and `make test` target.
+
+### Changed
+
+- Updated Python linting to cover the interactive implementation and tests.
+- Align the interactive result table with the standard table's column widths,
+  title alignment, and semantic colours, with explicit Magnet/Torrent actions.
+- Make `make install` deploy a standalone runtime under
+  `~/.local/lib/jackett-search` rather than linking back to the source checkout.
+- Make user-local `~/.local/bin` the default installation location, without
+  requiring `sudo`.
+- Add the `INSTALL_PREFIX` installer parameter for a user-chosen standalone
+  installation prefix.
+
+### Fixed
+
+- Exit the interactive TUI cleanly on `Ctrl-C` after curses restores the terminal,
+  or from any TUI screen with confirmed `Ctrl-X`.
+- Constrain interactive Sort and Filter fields to selectable valid options, and
+  Limit and Timeout fields to numeric input with arrow or `j`/`k` adjustments.
+- Clarify interactive form units by labelling Limit as a result count and Timeout
+  in seconds.
+- Make Esc context-sensitive with confirmation before cancelling active searches
+  or returning from results to the search form; use `q` from results or `Ctrl-C`
+  to exit cleanly.
+- Avoid a misleading permission-denied message during installation by using a
+  user-writable default prefix.
+- Keep the previous standalone runtime intact if an upgrade cannot fully stage
+  its replacement.
+- Keep `make -n` side-effect free for installation and companion-service
+  commands.
+- Connect Docker Jackett and FlareSolverr through a shared Docker network,
+  avoiding the macOS-only `host.docker.internal` gateway on Linux hosts.
+- Make installer-reported manual Docker commands create that external network
+  before starting either companion service.
+- Exclude macOS `._*` and `.DS_Store` metadata from migrated Jackett
+  configuration to prevent .NET DataProtection key-ring corruption.
+- Terminate active Jackett-search and put.io child processes before handling
+  `Ctrl-C`, and preserve completed client actions if preference saving fails.
+- Use the stable Jackett WebUI root URL in the Docker verification instructions.
+- Preserve a compound CLI sort for its initial interactive search and make the
+  first selector change choose a deterministic supported sort.
+- Offer put.io only for selected Magnet URLs, avoiding submission of private or
+  authenticated Jackett Torrent retrieval links to a remote service.
+- Keep all printable keys as text in the put.io folder filter, with non-printing
+  navigation and cancellation controls.
+- Allow confirmed Escape or Ctrl-X cancellation while the put.io transfer
+  creation or post-submit cancellation command is running, then terminate and
+  reap its local child process.
+- Retain the documented Python 3.8 runtime compatibility for cancellable
+  put.io commands.
+- Keep Magnet and Torrent URL actions visible and focused in supported
+  80–142-column interactive terminals by compacting result columns while
+  preserving full result row numbers.
 
 ## [0.2.1] - 2026-04-29
 
@@ -121,7 +186,7 @@ _No changelog items yet for this version._
 - **`.gitignore`** covering Python artefacts, macOS metadata, and local
   config files that may contain API keys.
 
-[Unreleased]: https://github.com/marcomc/jackett-search/compare/v0.2.1...HEAD
+[0.3.0]: https://github.com/marcomc/jackett-search/compare/v0.2.1...release/0.3.0
 [0.2.1]: https://github.com/marcomc/jackett-search/releases/tag/v0.2.1
 [0.2.0]: https://github.com/marcomc/jackett-search/releases/tag/v0.2.0
 [0.1.0]: https://github.com/marcomc/jackett-search/releases/tag/v0.1.0
