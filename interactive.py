@@ -1231,6 +1231,13 @@ class InteractiveSession:
                         )
                         continue
                     self._stop_search_worker(process)
+                    # The forked worker inherits ncurses state. Its termination can
+                    # restore the shared terminal settings, so put the parent TUI
+                    # back into program mode before accepting more keys.
+                    self.curses.endwin()
+                    self.screen = self.curses.initscr()
+                    self.screen.keypad(True)
+                    self.screen.timeout(-1)
                     self.status = "Search cancelled."
                     return False
                 spinner_index += 1

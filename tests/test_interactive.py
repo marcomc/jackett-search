@@ -1795,6 +1795,97 @@ class InteractiveStateTests(unittest.TestCase):
 class InteractivePtyTests(unittest.TestCase):
     """Exercise the real alternate-screen renderer without external dependencies."""
 
+    def test_cancelled_refresh_keeps_curses_input_active(self):
+        child_code = """
+import os
+import time
+from pathlib import Path
+import interactive
+
+home = Path(os.environ["HOME"])
+config_path = home / ".config" / "jackett-search" / "config.toml"
+calls_path = home / "search-calls"
+
+def search(_params):
+    if not calls_path.exists():
+        calls_path.touch()
+        return [{
+            "Title": "Existing result",
+            "Size": 1024,
+            "Seeders": 10,
+            "Peers": 1,
+            "Grabs": 1,
+            "DownloadVolumeFactor": 1.0,
+            "Tracker": "Fixture",
+            "MagnetUri": "magnet:?xt=urn:btih:example",
+            "Link": "https://example.invalid/download",
+        }]
+    time.sleep(10)
+    return []
+
+session = interactive.InteractiveSession(
+    interactive.SearchParams("Example"), search, config_path
+)
+session.run()
+"""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            home = Path(temporary_directory)
+            config_path = home / ".config" / "jackett-search" / "config.toml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            child_pid, master = pty.fork()
+            if child_pid == 0:
+                environment = os.environ.copy()
+                environment.update({"HOME": str(home), "TERM": "xterm-256color"})
+                os.chdir(ROOT)
+                os.execve(sys.executable, [sys.executable, "-c", child_code], environment)
+
+            rendered = bytearray()
+
+            def read_until(marker, timeout):
+                deadline = time.monotonic() + timeout
+                while marker not in rendered and time.monotonic() < deadline:
+                    ready, _, _ = select.select([master], [], [], 0.1)
+                    if not ready:
+                        continue
+                    try:
+                        rendered.extend(os.read(master, 65536))
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+                self.assertIn(marker, rendered)
+
+            try:
+                fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
+                read_until(b"Search complete: 1 result(s).", 5)
+                os.write(master, b"r")
+                read_until(b"Searching for: Example", 2)
+                os.write(master, b"\x1b")
+                read_until(b"Cancel active search?", 2)
+                os.write(master, b"\n")
+                read_until(b"Search cancelled.", 2)
+                self.assertEqual((0, 0), os.waitpid(child_pid, os.WNOHANG))
+                self.assertEqual(0, termios.tcgetattr(master)[3] & (termios.ICANON | termios.ECHO))
+                os.write(master, b"\x1b[C")
+                os.write(master, b"\x1b[D")
+                os.write(master, b"?")
+                read_until(b"Interactive help", 2)
+                self.assertNotIn(b"^[[C", rendered)
+
+                os.write(master, b"q")
+            finally:
+                if child_pid:
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        os.waitpid(child_pid, 0)
+                    except ChildProcessError:
+                        pass
+                os.close(master)
+
     def test_form_renders_in_a_pty_and_accepts_ctrl_x(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             home = Path(temporary_directory)

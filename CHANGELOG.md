@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split setup, usage, Bitport, and development guidance into focused `docs/`
   pages and keep the README as a short overview and documentation index.
 
+### Fixed
+
+- Restore curses terminal input after cancelling a repeated search so keyboard
+  navigation continues to work and escape sequences are not echoed literally.
+
 ## [0.3.0] - 2026-07-29 - Interactive search mode
 
 ### Added
