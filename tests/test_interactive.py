@@ -15,6 +15,7 @@ import tempfile
 import termios
 import time
 import unittest
+import urllib.parse
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
@@ -158,7 +159,7 @@ class InstallationTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(0, version.returncode, version.stderr)
-            self.assertIn("jackett-search 0.3.0", version.stdout)
+            self.assertIn("jackett-search 0.4.0", version.stdout)
 
             uninstalled = subprocess.run(
                 [
@@ -273,7 +274,7 @@ class SearchParamsTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                [interactive.SearchParams("valid")],
+                [interactive.SearchParams("valid", result_filter="both")],
                 interactive.load_history(history_path),
             )
 
@@ -406,6 +407,103 @@ class PutioTests(unittest.TestCase):
         self.assertEqual(99, interactive._transfer_id({"transfer": {"id": 99}}))
         self.assertEqual(100, interactive._transfer_id({"data": {"id": "100"}}))
         self.assertIsNone(interactive._transfer_id({"status": "OK"}))
+
+
+class BitportTests(unittest.TestCase):
+    """Validate Bitport API request and OAuth handling without contacting Bitport."""
+
+    def test_default_filter_is_magnets_and_can_be_configured(self):
+        self.assertEqual("magnets", interactive.SearchParams().result_filter)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('[interactive]\ndefault_filter = "both"\n', encoding="utf-8")
+            self.assertEqual(
+                "both", interactive.load_interactive_preferences(config_path).default_filter
+            )
+
+    def test_bitport_is_available_only_with_a_configured_token(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('[bitport]\nclient_id = "app"\n', encoding="utf-8")
+            client_keys = [key for key, _ in interactive.available_clients(config_path)]
+            self.assertNotIn("bitport", client_keys)
+            config_path.write_text(
+                '[bitport]\nclient_id = "app"\naccess_token = "account-token"\n',
+                encoding="utf-8",
+            )
+            client_keys = [key for key, _ in interactive.available_clients(config_path)]
+            self.assertIn("bitport", client_keys)
+
+    def test_folder_payload_and_transfer_parameters(self):
+        payload = {"data": [{"folders": [{"code": "f123", "name": "Movies"}]}]}
+        self.assertEqual(
+            [interactive.PutioFolder("f123", "Archive/Movies")],
+            interactive.parse_bitport_folders(payload, "Archive"),
+        )
+        self.assertEqual(
+            {"torrent": "magnet:?xt=urn:btih:abc", "folder_code": "f123"},
+            interactive.bitport_transfer_parameters("magnet:?xt=urn:btih:abc", "f123"),
+        )
+        self.assertEqual(
+            {"torrent": "magnet:?xt=urn:btih:abc"},
+            interactive.bitport_transfer_parameters("magnet:?xt=urn:btih:abc", ""),
+        )
+
+    def test_request_uses_bearer_token_and_form_encodes_transfer_fields(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('[bitport]\naccess_token = "token#value"\n', encoding="utf-8")
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"status":"success","data":[]}'
+            with mock.patch.object(
+                interactive.urllib.request, "urlopen", return_value=response
+            ) as open_url:
+                interactive.bitport_request(
+                    config_path,
+                    "POST",
+                    "/transfers",
+                    interactive.bitport_transfer_parameters(
+                        "magnet:?xt=urn:btih:abc&dn=Example", "folder/code"
+                    ),
+                )
+            request = open_url.call_args.args[0]
+            self.assertEqual("Bearer token#value", request.get_header("Authorization"))
+            self.assertEqual("https://api.bitport.io/v2/transfers", request.full_url)
+            self.assertEqual(
+                {
+                    "torrent": ["magnet:?xt=urn:btih:abc&dn=Example"],
+                    "folder_code": ["folder/code"],
+                },
+                urllib.parse.parse_qs(request.data.decode("utf-8")),
+            )
+
+    def test_device_login_saves_token_and_restricts_config_permissions(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text(
+                '[bitport]\nclient_id = "app-id"\nclient_secret = "secret#value"\n',
+                encoding="utf-8",
+            )
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"access_token":"token#value"}'
+            with mock.patch.object(
+                interactive.urllib.request, "urlopen", return_value=response
+            ) as open_url:
+                interactive.bitport_device_login(config_path, " user-code ")
+            request = open_url.call_args.args[0]
+            self.assertEqual("https://api.bitport.io/v2/oauth2/access-token", request.full_url)
+            self.assertEqual(
+                {
+                    "client_id": ["app-id"],
+                    "client_secret": ["secret#value"],
+                    "grant_type": ["code"],
+                    "code": ["user-code"],
+                },
+                urllib.parse.parse_qs(request.data.decode("utf-8")),
+            )
+            saved_token = interactive.read_toml_sections(config_path)["bitport"]["access_token"]
+            self.assertEqual("token#value", saved_token)
+            self.assertEqual(0o600, config_path.stat().st_mode & 0o777)
 
 
 class InteractiveStateTests(unittest.TestCase):

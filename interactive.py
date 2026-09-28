@@ -1,5 +1,6 @@
 """Dependency-free curses interface and state helpers for ``jackett-search``."""
 
+import base64
 import json
 import multiprocessing
 import os
@@ -189,7 +190,9 @@ def _run_search_worker(
         sender.close()
 
 
-def _run_bitport_worker(config_path: Path, method: str, path: str, parameters: Dict[str, str], sender: Any):
+def _run_bitport_worker(
+    config_path: Path, method: str, path: str, parameters: Dict[str, str], sender: Any
+):
     """Run a Bitport HTTP request in a separately terminable process."""
     try:
         sender.send(("result", bitport_request(config_path, method, path, parameters)))
@@ -227,7 +230,20 @@ def history_path_for(config_path: Optional[Path]) -> Path:
 
 
 def _toml_scalar(raw: str) -> Any:
-    value = raw.strip().split("#", 1)[0].strip()
+    value = raw.strip()
+    if value.startswith('"'):
+        escaped = False
+        for index in range(1, len(value)):
+            character = value[index]
+            if character == '"' and not escaped:
+                value = value[: index + 1]
+                break
+            if character == "\\" and not escaped:
+                escaped = True
+            else:
+                escaped = False
+    else:
+        value = value.split("#", 1)[0].strip()
     if value.lower() == "true":
         return True
     if value.lower() == "false":
@@ -507,6 +523,45 @@ def bitport_transfer_parameters(url: str, folder_code: str) -> Dict[str, str]:
     if folder_code:
         parameters["folder_code"] = folder_code
     return parameters
+
+
+def bitport_device_login(config_path: Path, code: str) -> None:
+    """Exchange a Bitport device code and persist its account access token."""
+    if not config_path.exists():
+        raise RuntimeError("The active config.toml does not exist; configure Jackett first.")
+    bitport = read_toml_sections(config_path).get("bitport", {})
+    client_id = bitport.get("client_id")
+    client_secret = bitport.get("client_secret")
+    if not isinstance(client_id, str) or not client_id.strip():
+        raise RuntimeError("Set bitport.client_id in the active config.toml first.")
+    if not isinstance(client_secret, str) or not client_secret.strip():
+        raise RuntimeError("Set bitport.client_secret in the active config.toml first.")
+    body = urllib.parse.urlencode(
+        {
+            "client_id": client_id.strip(),
+            "client_secret": client_secret.strip(),
+            "grant_type": "code",
+            "code": code.strip(),
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.bitport.io/v2/oauth2/access-token",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Bitport token exchange failed with HTTP {error.code}.") from error
+    except (urllib.error.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Bitport token exchange failed: {error}") from error
+    token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("Bitport did not return an access token.")
+    update_toml_sections(config_path, {"bitport": {"access_token": token}})
+    os.chmod(config_path, 0o600)
 
 
 def clipboard_command() -> Optional[List[str]]:
@@ -1563,7 +1618,7 @@ class InteractiveSession:
         if url is None:
             self.status = "The selected result has no usable URL for this action."
             return
-    clients = available_clients(self.config_path)
+        clients = available_clients(self.config_path)
         if self.focused_action == "torrent":
             # Jackett's Link can be its authenticated, private /dl/ proxy URL.
             # Jackett links can be private/authenticated. Remote providers receive
@@ -1716,11 +1771,7 @@ class InteractiveSession:
             last_folder_id = self.preferences.putio_last_folder_id
             title = "Choose put.io destination"
         initial = next(
-            (
-                index
-                for index, folder in enumerate(folders)
-                if folder.id == last_folder_id
-            ),
+            (index for index, folder in enumerate(folders) if folder.id == last_folder_id),
             0,
         )
         selected_id = folders[initial].id
@@ -1853,7 +1904,8 @@ class InteractiveSession:
                         raise ExitInteractiveMode()
                     self._draw_loading(progress)
                 elif key == 27 and self._confirm_search_transition(
-                    "Cancel Bitport request?", "This stops the local request; Bitport may already have accepted it."
+                    "Cancel Bitport request?",
+                    "This stops the local request; Bitport may already have accepted it.",
                 ):
                     self._stop_worker(process)
                     raise CancelledError()
@@ -1890,11 +1942,17 @@ class InteractiveSession:
         visited = {""}
         while queue:
             parent_code, parent_path = queue.pop(0)
-            path = "/cloud/byPath" if not parent_code else (
-                "/cloud/" + urllib.parse.quote(parent_code, safe="")
-            )
+            if parent_code:
+                path = "/cloud/" + urllib.parse.quote(parent_code, safe="")
+                parameters = None
+            else:
+                path = "/cloud/byPath"
+                parameters = {"folderPath": base64.b64encode(b"/").decode("ascii")}
             payload = self._bitport_api_call(
-                "GET", path, None, f"Loading Bitport folders… scanning {parent_path or 'Root'}"
+                "GET",
+                path,
+                parameters,
+                f"Loading Bitport folders… scanning {parent_path or 'Root'}",
             )
             for folder in parse_bitport_folders(payload, parent_path):
                 if folder.id in visited:

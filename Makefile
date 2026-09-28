@@ -369,7 +369,7 @@ lint-py: ## Lint Python source with ruff
 lint-md: ## Lint Markdown files with markdownlint
 	@command -v markdownlint >/dev/null 2>&1 \
 		|| { echo "✗ markdownlint not found — run: make dev-deps"; exit 1; }
-	markdownlint *.md
+	find . -name '*.md' -not -path './.git/*' -print0 | xargs -0 markdownlint
 
 test: ## Run dependency-free Python unit tests
 	python3 -m unittest discover -s tests -v

@@ -17,6 +17,7 @@ Usage:
   jackett-search --sort "seeders:asc,size:desc" "..."  # explicit dirs
   jackett-search --interactive "<query>"
   jackett-search --interactive
+  jackett-search --bitport-auth
   jackett-search --clear-history
 
 Sort fields — append :asc or :desc to override default direction:
@@ -39,10 +40,13 @@ Reads url and api_key from (in priority order):
 
 import argparse
 import functools
+import getpass
 import json
+import os
 import sys
 import urllib.parse
 import urllib.request
+import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -50,9 +54,12 @@ from interactive import (
     InteractiveSession,
     InteractiveUnavailableError,
     SearchParams,
+    bitport_device_login,
     clear_history,
     history_path_for,
     load_interactive_preferences,
+    read_toml_sections,
+    update_toml_sections,
 )
 
 VERSION = "0.4.0"
@@ -96,7 +103,11 @@ def load_config():
         print(
             f"Error: api_key not found. Create {cfg_hint} with:\n"
             '  url     = "http://127.0.0.1:9117"\n'
-            '  api_key = "<your-jackett-api-key>"',
+            '  api_key = "<your-jackett-api-key>"\n'
+            "\n"
+            "[bitport]\n"
+            'client_id = ""\n'
+            'client_secret = ""',
             file=sys.stderr,
         )
         sys.exit(1)
@@ -544,6 +555,11 @@ Examples:
         action="store_true",
         help="Delete persisted interactive query history and exit",
     )
+    parser.add_argument(
+        "--bitport-auth",
+        action="store_true",
+        help="Authorize this Bitport account and save its OAuth access token",
+    )
 
     link_group = parser.add_mutually_exclusive_group()
     link_group.add_argument(
@@ -588,6 +604,7 @@ Examples:
         search_arguments = (
             args.query,
             args.interactive,
+            args.bitport_auth,
             args.as_json,
             args.magnet,
             args.magnets_only,
@@ -603,6 +620,86 @@ Examples:
             print(f"Cleared interactive query history: {history_path}")
         else:
             print(f"No persisted interactive query history found: {history_path}")
+        return
+
+    if args.bitport_auth:
+        if any(
+            (
+                args.query,
+                args.interactive,
+                args.as_json,
+                args.magnet is not None,
+                args.magnets_only,
+                args.torrent_only,
+                args.limit is not None,
+                args.timeout != DEFAULT_TIMEOUT,
+                args.sort != DEFAULT_SORT,
+            )
+        ):
+            parser.error("--bitport-auth cannot be combined with search or output arguments.")
+        config_path = find_config_path()
+        if not config_path.exists():
+            parser.error(f"Configure Jackett first by creating {config_path}.")
+        if not sys.stdin.isatty():
+            parser.error("--bitport-auth needs a terminal to enter credentials securely.")
+        os.chmod(config_path, 0o600)
+        bitport_config = read_toml_sections(config_path).get("bitport", {})
+        client_id = bitport_config.get("client_id")
+        client_secret = bitport_config.get("client_secret")
+        has_client_id = isinstance(client_id, str) and bool(client_id.strip())
+        has_client_secret = isinstance(client_secret, str) and bool(client_secret.strip())
+        if not has_client_id or not has_client_secret:
+            registration_url = "https://bitport.io/api/create-application"
+            app_page_url = "https://marcomc.github.io/jackett-search/"
+            logo_url = "https://marcomc.github.io/jackett-search/assets/jackett-search-logo.png"
+            print("Register your own Bitport application using these values:")
+            print("  Application Name: Jackett Search")
+            print(f"  Application Redirect URL: {app_page_url}")
+            print(f"  Application Logo URL: {logo_url}")
+            print(f"  Application Page URL: {app_page_url}")
+            print("The current device-code flow does not use the redirect as an OAuth callback.")
+            print(f"Opening {registration_url}")
+            try:
+                webbrowser.open(registration_url)
+            except webbrowser.Error:
+                pass
+            try:
+                input("After registering the app, press Enter to enter its credentials. ")
+                if not has_client_id:
+                    client_id = input("Application ID / client_id (visible): ").strip()
+                if not has_client_secret:
+                    client_secret = getpass.getpass(
+                        "Application Secret / client_secret (hidden): "
+                    ).strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nBitport application setup cancelled.", file=sys.stderr)
+                return
+            if not isinstance(client_id, str) or not client_id.strip():
+                parser.error("Application ID cannot be empty.")
+            if not isinstance(client_secret, str) or not client_secret.strip():
+                parser.error("Application Secret cannot be empty.")
+            credentials = {}
+            if not has_client_id:
+                credentials["client_id"] = client_id.strip()
+            if not has_client_secret:
+                credentials["client_secret"] = client_secret.strip()
+            update_toml_sections(config_path, {"bitport": credentials})
+            os.chmod(config_path, 0o600)
+            print(f"Saved Bitport application credentials in {config_path}.")
+        authorization_url = "https://bitport.io/get-access"
+        print(f"Open {authorization_url} and sign in to your Bitport account.")
+        try:
+            webbrowser.open(authorization_url)
+        except webbrowser.Error:
+            pass
+        code = input("Paste the USER_CODE shown by Bitport: ").strip()
+        if not code:
+            parser.error("Bitport device code cannot be empty.")
+        try:
+            bitport_device_login(config_path, code)
+        except (OSError, RuntimeError) as error:
+            parser.error(str(error))
+        print(f"Bitport access token saved securely in {config_path}.")
         return
 
     if args.interactive and (args.as_json or args.magnet):
