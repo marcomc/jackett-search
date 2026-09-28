@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-28 - Bitport integration
+
+### Added
+
+- Add Bitport.io as an interactive magnet destination with recursive live folder
+  discovery and destination selection through the documented Bitport API.
+- Add a device-code authorization command that stores the Bitport account token
+  in the local config file.
+- Prompt for missing Bitport application credentials, hide secret input, and
+  save credentials in the local config file.
+- Document per-user Bitport app registration and the public Jackett Search URLs
+  to enter in the registration form.
+- Allow the interactive default result filter to be configured, defaulting to
+  magnets while keeping the Filter selector available.
+- Document how to build the optional put.io CLI for Linux ARM64.
+
+### Changed
+
+- Offer remote cloud destinations only for magnet actions; Jackett torrent URLs
+  remain local because they may require private indexer credentials.
+- Split setup, usage, Bitport, and development guidance into focused `docs/`
+  pages and keep the README as a short overview and documentation index.
+
+### Fixed
+
+- Restore curses terminal input after cancelling a repeated search so keyboard
+  navigation continues to work and escape sequences are not echoed literally.
+- Drain Bitport worker responses while loading folders so large cloud listings
+  cannot stall the destination picker.
+- Stop Jackett installation if its server configuration cannot be updated.
+
 ## [0.3.0] - 2026-07-29 - Interactive search mode
 
 ### Added

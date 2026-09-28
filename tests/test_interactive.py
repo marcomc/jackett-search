@@ -3,6 +3,7 @@
 import errno
 import fcntl
 import json
+import multiprocessing
 import os
 import pty
 import select
@@ -14,7 +15,9 @@ import sys
 import tempfile
 import termios
 import time
+import traceback
 import unittest
+import urllib.parse
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
@@ -35,6 +38,67 @@ CLI_LOADER.exec_module(cli)
 
 class InstallationTests(unittest.TestCase):
     """Prove the Makefile installs runtime files independently of the checkout."""
+
+    def test_install_helper_configures_jackett_without_losing_other_settings(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "ServerConfig.json"
+            config_path.write_text('{"APIKey":"keep","LocalBindAddress":"old"}\n', encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "install_support.py"),
+                    "configure-jackett",
+                    str(config_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertEqual(
+                {
+                    "APIKey": "keep",
+                    "LocalBindAddress": "0.0.0.0",
+                    "FlareSolverrUrl": "http://flaresolverr:8191",
+                },
+                json.loads(config_path.read_text(encoding="utf-8")),
+            )
+
+    def test_install_jackett_stops_if_server_config_cannot_be_updated(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            config_dir = temporary_path / "config"
+            server_config = config_dir / "jackett-config" / "Jackett" / "ServerConfig.json"
+            server_config.parent.mkdir(parents=True)
+            server_config.write_text("invalid JSON\n", encoding="utf-8")
+            fake_bin = temporary_path / "bin"
+            fake_bin.mkdir()
+            fake_docker = fake_bin / "docker"
+            shutil.copy2(ROOT / "tests" / "fixtures" / "fake_docker.py", fake_docker)
+            fake_docker.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "DOCKER_LOG": str(temporary_path / "docker.log"),
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                }
+            )
+            installed = subprocess.run(
+                [
+                    "make",
+                    "--no-print-directory",
+                    "install-jackett",
+                    f"CONFIG_DIR={config_dir}",
+                    f"JACKETT_NATIVE_CONFIG_DIR={temporary_path / 'native'}",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+            self.assertNotEqual(0, installed.returncode)
+            self.assertNotIn("✓ Installed Jackett compose file", installed.stdout)
 
     def test_default_install_locations_are_user_local(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
@@ -69,10 +133,7 @@ class InstallationTests(unittest.TestCase):
             fake_bin.mkdir()
             docker_log = temporary_path / "docker.log"
             fake_docker = fake_bin / "docker"
-            fake_docker.write_text(
-                '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$DOCKER_LOG"\nexit 0\n',
-                encoding="utf-8",
-            )
+            shutil.copy2(ROOT / "tests" / "fixtures" / "fake_docker.py", fake_docker)
             fake_docker.chmod(0o755)
 
             environment = os.environ.copy()
@@ -158,7 +219,7 @@ class InstallationTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(0, version.returncode, version.stderr)
-            self.assertIn("jackett-search 0.3.0", version.stdout)
+            self.assertIn("jackett-search 0.4.0", version.stdout)
 
             uninstalled = subprocess.run(
                 [
@@ -207,16 +268,7 @@ class InstallationTests(unittest.TestCase):
             fake_bin.mkdir()
             install_counter = install_root / "install-count"
             fake_install = fake_bin / "install"
-            fake_install.write_text(
-                "#!/bin/sh\n"
-                "count=0\n"
-                'if [ -f "$INSTALL_COUNTER" ]; then count=$(cat "$INSTALL_COUNTER"); fi\n'
-                "count=$((count + 1))\n"
-                'printf \'%s\\n\' "$count" > "$INSTALL_COUNTER"\n'
-                'if [ "$count" -eq 2 ]; then exit 1; fi\n'
-                'exec "$REAL_INSTALL" "$@"\n',
-                encoding="utf-8",
-            )
+            shutil.copy2(ROOT / "tests" / "fixtures" / "fake_install.py", fake_install)
             fake_install.chmod(0o755)
             real_install = shutil.which("install")
             self.assertIsNotNone(real_install)
@@ -273,7 +325,7 @@ class SearchParamsTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                [interactive.SearchParams("valid")],
+                [interactive.SearchParams("valid", result_filter="both")],
                 interactive.load_history(history_path),
             )
 
@@ -406,6 +458,167 @@ class PutioTests(unittest.TestCase):
         self.assertEqual(99, interactive._transfer_id({"transfer": {"id": 99}}))
         self.assertEqual(100, interactive._transfer_id({"data": {"id": "100"}}))
         self.assertIsNone(interactive._transfer_id({"status": "OK"}))
+
+
+class _IdleScreen:
+    def timeout(self, _milliseconds):
+        pass
+
+    def getch(self):
+        time.sleep(0.01)
+        return -1
+
+
+def _send_large_bitport_listing(_config_path, _method, _path, _parameters, sender):
+    try:
+        sender.send(
+            (
+                "result",
+                {
+                    "status": "success",
+                    "data": [{"folders": [{"code": "folder", "name": "x" * 262144}]}],
+                },
+            )
+        )
+    finally:
+        sender.close()
+
+
+def _exercise_large_bitport_listing(sender):
+    try:
+        session = interactive.InteractiveSession(
+            interactive.SearchParams(), lambda _params: [], Path("missing-config.toml")
+        )
+        session.screen = _IdleScreen()
+        session._draw_loading = mock.Mock()
+        with mock.patch.object(
+            interactive.multiprocessing, "Process", multiprocessing.get_context("fork").Process
+        ), mock.patch.object(interactive, "_run_bitport_worker", _send_large_bitport_listing):
+            payload = session._bitport_api_call("GET", "/cloud/byPath", None, "Loading folders")
+        sender.send(("result", len(payload["data"][0]["folders"][0]["name"])))
+    except Exception as error:
+        sender.send(("error", repr(error)))
+    finally:
+        sender.close()
+
+
+class BitportTests(unittest.TestCase):
+    """Validate Bitport API request and OAuth handling without contacting Bitport."""
+
+    @unittest.skipIf(sys.platform == "win32", "Bitport worker regression requires fork")
+    def test_large_folder_listing_does_not_block_the_worker(self):
+        context = multiprocessing.get_context("fork")
+        receiver, sender = context.Pipe(duplex=False)
+        process = context.Process(target=_exercise_large_bitport_listing, args=(sender,))
+        try:
+            process.start()
+            sender.close()
+            self.assertTrue(receiver.poll(5), "Bitport worker blocked on the large response")
+            self.assertEqual(("result", 262144), receiver.recv())
+            process.join(timeout=5)
+            self.assertEqual(0, process.exitcode)
+        finally:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            sender.close()
+            receiver.close()
+
+    def test_default_filter_is_magnets_and_can_be_configured(self):
+        self.assertEqual("magnets", interactive.SearchParams().result_filter)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('[interactive]\ndefault_filter = "both"\n', encoding="utf-8")
+            self.assertEqual(
+                "both", interactive.load_interactive_preferences(config_path).default_filter
+            )
+
+    def test_bitport_is_available_only_with_a_configured_token(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('[bitport]\nclient_id = "app"\n', encoding="utf-8")
+            client_keys = [key for key, _ in interactive.available_clients(config_path)]
+            self.assertNotIn("bitport", client_keys)
+            config_path.write_text(
+                '[bitport]\nclient_id = "app"\naccess_token = "account-token"\n',
+                encoding="utf-8",
+            )
+            client_keys = [key for key, _ in interactive.available_clients(config_path)]
+            self.assertIn("bitport", client_keys)
+
+    def test_folder_payload_and_transfer_parameters(self):
+        payload = {"data": [{"folders": [{"code": "f123", "name": "Movies"}]}]}
+        self.assertEqual(
+            [interactive.PutioFolder("f123", "Archive/Movies")],
+            interactive.parse_bitport_folders(payload, "Archive"),
+        )
+        self.assertEqual(
+            {"torrent": "magnet:?xt=urn:btih:abc", "folder_code": "f123"},
+            interactive.bitport_transfer_parameters("magnet:?xt=urn:btih:abc", "f123"),
+        )
+        self.assertEqual(
+            {"torrent": "magnet:?xt=urn:btih:abc"},
+            interactive.bitport_transfer_parameters("magnet:?xt=urn:btih:abc", ""),
+        )
+
+    def test_request_uses_bearer_token_and_form_encodes_transfer_fields(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('[bitport]\naccess_token = "token#value"\n', encoding="utf-8")
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"status":"success","data":[]}'
+            with mock.patch.object(
+                interactive.urllib.request, "urlopen", return_value=response
+            ) as open_url:
+                interactive.bitport_request(
+                    config_path,
+                    "POST",
+                    "/transfers",
+                    interactive.bitport_transfer_parameters(
+                        "magnet:?xt=urn:btih:abc&dn=Example", "folder/code"
+                    ),
+                )
+            request = open_url.call_args.args[0]
+            self.assertEqual("Bearer token#value", request.get_header("Authorization"))
+            self.assertEqual("https://api.bitport.io/v2/transfers", request.full_url)
+            self.assertEqual(
+                {
+                    "torrent": ["magnet:?xt=urn:btih:abc&dn=Example"],
+                    "folder_code": ["folder/code"],
+                },
+                urllib.parse.parse_qs(request.data.decode("utf-8")),
+            )
+
+    def test_device_login_saves_token_and_restricts_config_permissions(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text(
+                '[bitport]\nclient_id = "app-id"\nclient_secret = "secret#value"\n',
+                encoding="utf-8",
+            )
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"access_token":"token#value"}'
+            with mock.patch.object(
+                interactive.urllib.request, "urlopen", return_value=response
+            ) as open_url:
+                interactive.bitport_device_login(config_path, " user-code ")
+            request = open_url.call_args.args[0]
+            self.assertEqual("https://api.bitport.io/v2/oauth2/access-token", request.full_url)
+            self.assertEqual(
+                {
+                    "client_id": ["app-id"],
+                    "client_secret": ["secret#value"],
+                    "grant_type": ["code"],
+                    "code": ["user-code"],
+                },
+                urllib.parse.parse_qs(request.data.decode("utf-8")),
+            )
+            saved_token = interactive.read_toml_sections(config_path)["bitport"]["access_token"]
+            self.assertEqual("token#value", saved_token)
+            self.assertEqual(0o600, config_path.stat().st_mode & 0o777)
 
 
 class InteractiveStateTests(unittest.TestCase):
@@ -1691,11 +1904,130 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertIn("Preference was not saved", session.status)
 
 
+def _run_cancelled_refresh_fixture(home):
+    config_path = home / ".config" / "jackett-search" / "config.toml"
+    calls_path = home / "search-calls"
+
+    def search(_params):
+        if not calls_path.exists():
+            calls_path.touch()
+            return [
+                {
+                    "Title": "Existing result",
+                    "Size": 1024,
+                    "Seeders": 10,
+                    "Peers": 1,
+                    "Grabs": 1,
+                    "DownloadVolumeFactor": 1.0,
+                    "Tracker": "Fixture",
+                    "MagnetUri": "magnet:?xt=urn:btih:example",
+                    "Link": "https://example.invalid/download",
+                }
+            ]
+        time.sleep(10)
+        return []
+
+    session = interactive.InteractiveSession(
+        interactive.SearchParams("Example"), search, config_path
+    )
+    session.run()
+
+
 @unittest.skipIf(
     sys.platform == "win32", "curses alternate-screen tests require a Unix pseudo-terminal"
 )
 class InteractivePtyTests(unittest.TestCase):
     """Exercise the real alternate-screen renderer without external dependencies."""
+
+    def test_cancelled_refresh_keeps_curses_input_active(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            home = Path(temporary_directory)
+            config_path = home / ".config" / "jackett-search" / "config.toml"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            child_pid, master = pty.fork()
+            if child_pid == 0:
+                os.environ.update({"HOME": str(home), "TERM": "xterm-256color"})
+                os.chdir(ROOT)
+                try:
+                    _run_cancelled_refresh_fixture(home)
+                except BaseException:
+                    traceback.print_exc()
+                    sys.stderr.flush()
+                    os._exit(1)
+                os._exit(0)
+
+            rendered = bytearray()
+
+            def read_until(marker, timeout, start=0):
+                deadline = time.monotonic() + timeout
+                while marker not in rendered[start:] and time.monotonic() < deadline:
+                    ready, _, _ = select.select([master], [], [], 0.1)
+                    if not ready:
+                        continue
+                    try:
+                        rendered.extend(os.read(master, 65536))
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+                self.assertIn(marker, rendered[start:])
+
+            try:
+                fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
+                read_until(b"Search complete: 1 result(s).", 5)
+                os.write(master, b"r")
+                read_until(b"Searching for: Example", 2)
+                os.write(master, b"\x1b")
+                read_until(b"Cancel active search?", 2)
+                os.write(master, b"\n")
+                read_until(b"Search cancelled.", 2)
+                self.assertEqual((0, 0), os.waitpid(child_pid, os.WNOHANG))
+                self.assertEqual(0, termios.tcgetattr(master)[3] & (termios.ICANON | termios.ECHO))
+                os.write(master, b"\x1b[C")
+                os.write(master, b"\x1b[D")
+                os.write(master, b"?")
+                read_until(b"Interactive help", 2)
+                self.assertNotIn(b"^[[C", rendered)
+                help_end = len(rendered)
+                os.write(master, b"x")
+                read_until(b"Search cancelled.", 2, start=help_end)
+                os.write(master, b"q")
+                deadline = time.monotonic() + 3
+                status = None
+                while status is None and time.monotonic() < deadline:
+                    waited_pid, wait_status = os.waitpid(child_pid, os.WNOHANG)
+                    if waited_pid:
+                        status = wait_status
+                        break
+                    ready, _, _ = select.select([master], [], [], 0.05)
+                    if not ready:
+                        continue
+                    try:
+                        rendered.extend(os.read(master, 65536))
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+                self.assertIsNotNone(
+                    status,
+                    "interactive child did not exit after returning from help: "
+                    + repr(bytes(rendered[-1500:])),
+                )
+                child_pid = 0
+                self.assertTrue(os.WIFEXITED(status))
+                self.assertEqual(0, os.WEXITSTATUS(status))
+            finally:
+                if child_pid:
+                    try:
+                        os.kill(child_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        os.waitpid(child_pid, 0)
+                    except ChildProcessError:
+                        pass
+                os.close(master)
 
     def test_form_renders_in_a_pty_and_accepts_ctrl_x(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -1,5 +1,5 @@
 SCRIPT      := jackett-search
-PYTHON_SOURCES := $(SCRIPT) interactive.py tests
+PYTHON_SOURCES := $(SCRIPT) interactive.py scripts tests
 INSTALL_PREFIX ?= $(HOME)/.local
 INSTALL_DIR ?= $(INSTALL_PREFIX)/bin
 INSTALL_PATH := $(INSTALL_DIR)/$(SCRIPT)
@@ -18,6 +18,7 @@ JACKETT_APP_DIR := $(JACKETT_DATA_DIR)/Jackett
 JACKETT_DOWNLOADS_DIR := $(CONFIG_DIR)/jackett-downloads
 JACKETT_NATIVE_CONFIG_DIR := $(HOME)/Library/Application Support/Jackett
 JACKETT_SERVER_CONFIG := $(JACKETT_APP_DIR)/ServerConfig.json
+JACKETT_CONFIGURE_CMD := python3 scripts/install_support.py configure-jackett "$(JACKETT_SERVER_CONFIG)"
 DOCKER_NETWORK := jackett-search
 JACKETT_START_CMD := docker compose -f "$(JACKETT_COMPOSE_DST)" up -d
 USER_ID := $(shell id -u)
@@ -62,7 +63,7 @@ help: ## Show available commands
 install: ## Install standalone jackett-search for the current user
 	@command -v python3 >/dev/null 2>&1 \
 		|| { echo "✗ python3 not found — install Python 3.8+ first"; exit 1; }
-	@python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" \
+	@python3 scripts/install_support.py check-python \
 		|| { echo "✗ Python 3.8+ required (found $$(python3 --version))"; exit 1; }
 	@staging_dir=""; backup_dir=""; failed_dir=""; \
 	fail_install() { \
@@ -186,7 +187,7 @@ install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
 		echo "✓ Removed $$metadata_files macOS metadata sidecar file(s) from Jackett config"; \
 	fi
 	@if [ -f "$(JACKETT_SERVER_CONFIG)" ]; then \
-		JACKETT_SERVER_CONFIG="$(JACKETT_SERVER_CONFIG)" python3 -c 'import json, os, pathlib; path = pathlib.Path(os.environ["JACKETT_SERVER_CONFIG"]); data = json.loads(path.read_text()); data["FlareSolverrUrl"] = "http://flaresolverr:8191"; data["LocalBindAddress"] = "0.0.0.0"; path.write_text(json.dumps(data, indent=2) + "\n")'; \
+		$(JACKETT_CONFIGURE_CMD) || exit 1; \
 		echo "✓ Set Docker Jackett FlareSolverr URL → http://flaresolverr:8191"; \
 		echo "✓ Set Docker Jackett bind address → 0.0.0.0"; \
 	fi
@@ -213,7 +214,7 @@ install-jackett: ## Install Jackett Docker Compose file in $(CONFIG_DIR)
 			done; \
 		fi; \
 		if [ -f "$(JACKETT_SERVER_CONFIG)" ]; then \
-			JACKETT_SERVER_CONFIG="$(JACKETT_SERVER_CONFIG)" python3 -c 'import json, os, pathlib; path = pathlib.Path(os.environ["JACKETT_SERVER_CONFIG"]); data = json.loads(path.read_text()); data["FlareSolverrUrl"] = "http://flaresolverr:8191"; data["LocalBindAddress"] = "0.0.0.0"; path.write_text(json.dumps(data, indent=2) + "\n")'; \
+			$(JACKETT_CONFIGURE_CMD) || exit 1; \
 			echo "✓ Set Docker Jackett FlareSolverr URL → http://flaresolverr:8191"; \
 			echo "✓ Set Docker Jackett bind address → 0.0.0.0"; \
 			$(DOCKER_JACKETT_ENV) docker compose -f "$(JACKETT_COMPOSE_DST)" restart jackett >/dev/null || exit 1; \
@@ -369,7 +370,7 @@ lint-py: ## Lint Python source with ruff
 lint-md: ## Lint Markdown files with markdownlint
 	@command -v markdownlint >/dev/null 2>&1 \
 		|| { echo "✗ markdownlint not found — run: make dev-deps"; exit 1; }
-	markdownlint *.md
+	find . -name '*.md' -not -path './.git/*' -print0 | xargs -0 markdownlint
 
 test: ## Run dependency-free Python unit tests
 	python3 -m unittest discover -s tests -v

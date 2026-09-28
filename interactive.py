@@ -1,5 +1,6 @@
 """Dependency-free curses interface and state helpers for ``jackett-search``."""
 
+import base64
 import json
 import multiprocessing
 import os
@@ -9,6 +10,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -129,7 +133,7 @@ class SearchParams:
     sort: str = "seeders"
     limit: Optional[int] = None
     timeout: int = 10
-    result_filter: str = "both"
+    result_filter: str = "magnets"
 
     def to_history(self) -> Dict[str, Any]:
         return {
@@ -186,21 +190,35 @@ def _run_search_worker(
         sender.close()
 
 
+def _run_bitport_worker(
+    config_path: Path, method: str, path: str, parameters: Dict[str, str], sender: Any
+):
+    """Run a Bitport HTTP request in a separately terminable process."""
+    try:
+        sender.send(("result", bitport_request(config_path, method, path, parameters)))
+    except Exception as error:
+        sender.send(("error", str(error)))
+    finally:
+        sender.close()
+
+
 @dataclass
 class InteractivePreferences:
     """Interactive-only preferences, kept separate from Jackett credentials."""
 
     persist_query_history: bool = True
     history_limit: int = DEFAULT_HISTORY_LIMIT
+    default_filter: str = "magnets"
     last_client: Optional[str] = None
     putio_last_folder_id: Optional[int] = None
+    bitport_last_folder_code: Optional[str] = None
 
 
 @dataclass
 class PutioFolder:
     """A visible put.io destination folder with a stable API ID and full path."""
 
-    id: int
+    id: Any
     path: str
 
 
@@ -212,7 +230,20 @@ def history_path_for(config_path: Optional[Path]) -> Path:
 
 
 def _toml_scalar(raw: str) -> Any:
-    value = raw.strip().split("#", 1)[0].strip()
+    value = raw.strip()
+    if value.startswith('"'):
+        escaped = False
+        for index in range(1, len(value)):
+            character = value[index]
+            if character == '"' and not escaped:
+                value = value[: index + 1]
+                break
+            if character == "\\" and not escaped:
+                escaped = True
+            else:
+                escaped = False
+    else:
+        value = value.split("#", 1)[0].strip()
     if value.lower() == "true":
         return True
     if value.lower() == "false":
@@ -253,15 +284,20 @@ def load_interactive_preferences(config_path: Optional[Path]) -> InteractivePref
     sections = read_toml_sections(config_path)
     interactive = sections.get("interactive", {})
     putio = sections.get("interactive.clients.putio", {})
+    bitport = sections.get("interactive.clients.bitport", {})
     preference = InteractivePreferences()
     if isinstance(interactive.get("persist_query_history"), bool):
         preference.persist_query_history = interactive["persist_query_history"]
     if isinstance(interactive.get("history_limit"), int) and interactive["history_limit"] > 0:
         preference.history_limit = interactive["history_limit"]
+    if interactive.get("default_filter") in FILTER_OPTIONS:
+        preference.default_filter = interactive["default_filter"]
     if isinstance(interactive.get("last_client"), str):
         preference.last_client = interactive["last_client"]
     if isinstance(putio.get("last_folder_id"), int) and putio["last_folder_id"] >= 0:
         preference.putio_last_folder_id = putio["last_folder_id"]
+    if isinstance(bitport.get("last_folder_code"), str):
+        preference.bitport_last_folder_code = bitport["last_folder_code"]
     return preference
 
 
@@ -403,15 +439,129 @@ def clear_history(history_path: Path) -> bool:
     return True
 
 
-def available_clients() -> List[Tuple[str, str]]:
+def available_clients(config_path: Optional[Path] = None) -> List[Tuple[str, str]]:
     """Return installed, supported client handlers in display order."""
     clients = []
     if shutil.which("putio"):
         clients.append(("putio", "put.io"))
+    sections = read_toml_sections(config_path)
+    bitport = sections.get("bitport", {})
+    if isinstance(bitport.get("access_token"), str) and bitport["access_token"].strip():
+        clients.append(("bitport", "Bitport.io"))
     default_command = "open" if sys.platform == "darwin" else "xdg-open"
     if shutil.which(default_command):
         clients.append(("default", "System default application"))
     return clients
+
+
+def bitport_request(
+    config_path: Path, method: str, path: str, parameters: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    """Call one documented Bitport API endpoint using the configured access token."""
+    token = read_toml_sections(config_path).get("bitport", {}).get("access_token")
+    if not isinstance(token, str) or not token.strip():
+        raise RuntimeError("Configure bitport.access_token before using Bitport.")
+    url = "https://api.bitport.io/v2" + path
+    data = None
+    if parameters:
+        encoded = urllib.parse.urlencode(parameters).encode("utf-8")
+        if method == "GET":
+            url += "?" + encoded.decode("ascii")
+        else:
+            data = encoded
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {token.strip()}",
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        try:
+            payload = json.loads(error.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise RuntimeError(f"Bitport API returned HTTP {error.code}.") from error
+    except (urllib.error.URLError, TimeoutError, UnicodeDecodeError) as error:
+        raise RuntimeError(f"Bitport API request failed: {error}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("Bitport returned an unexpected API response.")
+    if payload.get("status") == "error":
+        errors = payload.get("errors") or []
+        message = errors[0].get("message") if errors and isinstance(errors[0], dict) else None
+        raise RuntimeError(str(message or "Bitport rejected the request."))
+    if payload.get("status") != "success":
+        raise RuntimeError("Bitport returned an unexpected API response.")
+    return payload
+
+
+def parse_bitport_folders(payload: Dict[str, Any], parent_path: str) -> List[PutioFolder]:
+    """Extract child folders from a Bitport cloud listing."""
+    data = payload.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return []
+    result = []
+    for item in data[0].get("folders", []):
+        if not isinstance(item, dict):
+            continue
+        code = item.get("code")
+        name = str(item.get("name") or "").strip()
+        if not isinstance(code, str) or not code or not name:
+            continue
+        result.append(PutioFolder(code, f"{parent_path}/{name}" if parent_path else name))
+    return result
+
+
+def bitport_transfer_parameters(url: str, folder_code: str) -> Dict[str, str]:
+    """Build the documented Bitport new-transfer form fields."""
+    parameters = {"torrent": url}
+    if folder_code:
+        parameters["folder_code"] = folder_code
+    return parameters
+
+
+def bitport_device_login(config_path: Path, code: str) -> None:
+    """Exchange a Bitport device code and persist its account access token."""
+    if not config_path.exists():
+        raise RuntimeError("The active config.toml does not exist; configure Jackett first.")
+    bitport = read_toml_sections(config_path).get("bitport", {})
+    client_id = bitport.get("client_id")
+    client_secret = bitport.get("client_secret")
+    if not isinstance(client_id, str) or not client_id.strip():
+        raise RuntimeError("Set bitport.client_id in the active config.toml first.")
+    if not isinstance(client_secret, str) or not client_secret.strip():
+        raise RuntimeError("Set bitport.client_secret in the active config.toml first.")
+    body = urllib.parse.urlencode(
+        {
+            "client_id": client_id.strip(),
+            "client_secret": client_secret.strip(),
+            "grant_type": "code",
+            "code": code.strip(),
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.bitport.io/v2/oauth2/access-token",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Bitport token exchange failed with HTTP {error.code}.") from error
+    except (urllib.error.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Bitport token exchange failed: {error}") from error
+    token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("Bitport did not return an access token.")
+    update_toml_sections(config_path, {"bitport": {"access_token": token}})
+    os.chmod(config_path, 0o600)
 
 
 def clipboard_command() -> Optional[List[str]]:
@@ -574,13 +724,12 @@ class InteractiveSession:
             pass
         if self.params.query:
             self._perform_search(record=True)
-        else:
-            if not self._search_form(allow_cancel=False):
-                return
+        elif not self._search_form(allow_cancel=False):
+            return
 
         while True:
             self._draw_results()
-            key = screen.getch()
+            key = self.screen.getch()
             if key == CTRL_X:
                 self._request_exit()
             if key == ord("q"):
@@ -617,6 +766,23 @@ class InteractiveSession:
                 self._copy_focused_url()
             elif key in (10, 13, self.curses.KEY_ENTER):
                 self._activate_focused_action()
+
+    def _restart_curses_after_worker(self) -> None:
+        """Restore curses input after the forked worker changes the shared TTY."""
+        reset_prog_mode = getattr(self.curses, "reset_prog_mode", None)
+        cbreak = getattr(self.curses, "cbreak", None)
+        noecho = getattr(self.curses, "noecho", None)
+        if not all(callable(method) for method in (reset_prog_mode, cbreak, noecho)):
+            return
+        reset_prog_mode()
+        cbreak()
+        noecho()
+        self.screen.keypad(True)
+        self.screen.timeout(-1)
+        try:
+            self.curses.curs_set(0)
+        except self.curses.error:
+            pass
 
     def _terminal_ready(self) -> bool:
         height, width = self.screen.getmaxyx()
@@ -1081,7 +1247,10 @@ class InteractiveSession:
                         )
                         continue
                     self._stop_search_worker(process)
+                    # The forked worker inherits ncurses state. Its termination can
+                    # restore the shared terminal settings, so restore program mode.
                     self.status = "Search cancelled."
+                    self._restart_curses_after_worker()
                     return False
                 spinner_index += 1
                 self._draw_loading(
@@ -1468,17 +1637,19 @@ class InteractiveSession:
         if url is None:
             self.status = "The selected result has no usable URL for this action."
             return
-        clients = available_clients()
+        clients = available_clients(self.config_path)
         if self.focused_action == "torrent":
             # Jackett's Link can be its authenticated, private /dl/ proxy URL.
-            # A remote put.io transfer cannot reach that endpoint. Torrent-payload
-            # upload is a separate future adapter, so only magnets offer put.io.
-            clients = [(key, label) for key, label in clients if key != "putio"]
+            # Jackett links can be private/authenticated. Remote providers receive
+            # only magnets, which do not disclose the indexer's retrieval URL.
+            clients = [(key, label) for key, label in clients if key not in {"putio", "bitport"}]
         selected = self._choose("Choose application", clients, self.preferences.last_client)
         if selected is None:
             return
         if selected == "putio":
             self._activate_putio(url)
+        elif selected == "bitport":
+            self._activate_bitport(url)
         else:
             self._activate_default(url)
 
@@ -1608,14 +1779,18 @@ class InteractiveSession:
                 queue.append((folder.id, folder.path))
         return [folders[0]] + sorted(folders[1:], key=lambda folder: folder.path.casefold())
 
-    def _choose_folder(self, folders: Sequence[PutioFolder]) -> Optional[PutioFolder]:
+    def _choose_folder(
+        self, folders: Sequence[PutioFolder], client: str = "putio"
+    ) -> Optional[PutioFolder]:
         filter_text = ""
+        if client == "bitport":
+            last_folder_id = self.preferences.bitport_last_folder_code
+            title = "Choose Bitport destination"
+        else:
+            last_folder_id = self.preferences.putio_last_folder_id
+            title = "Choose put.io destination"
         initial = next(
-            (
-                index
-                for index, folder in enumerate(folders)
-                if folder.id == self.preferences.putio_last_folder_id
-            ),
+            (index for index, folder in enumerate(folders) if folder.id == last_folder_id),
             0,
         )
         selected_id = folders[initial].id
@@ -1632,7 +1807,7 @@ class InteractiveSession:
                 selected_id = filtered[index].id
             self._clear()
             height, width = self.screen.getmaxyx()
-            self._add(0, 0, "Choose put.io destination", self.curses.A_BOLD)
+            self._add(0, 0, title, self.curses.A_BOLD)
             self._add(1, 0, f"Filter: {filter_text or '(type to filter)'}", self.curses.A_DIM)
             visible = max(1, height - 6)
             top = max(0, min(index - visible // 2, max(0, len(filtered) - visible)))
@@ -1725,6 +1900,137 @@ class InteractiveSession:
             self._show_message("put.io transfer created", self.status)
             return
         self._post_submit_cancel(transfer_id, folder.path, preference_notice)
+
+    def _bitport_api_call(
+        self, method: str, path: str, parameters: Optional[Dict[str, str]], progress: str
+    ) -> Dict[str, Any]:
+        """Run an API call in a killable worker while keeping curses responsive."""
+        receiver, sender = multiprocessing.Pipe(duplex=False)
+        process = multiprocessing.Process(
+            target=_run_bitport_worker,
+            args=(self.config_path, method, path, parameters or {}, sender),
+        )
+        process.start()
+        sender.close()
+        response: Optional[Tuple[str, Any]] = None
+        try:
+            self._draw_loading(progress)
+            while True:
+                if receiver.poll():
+                    try:
+                        response = receiver.recv()
+                    except EOFError:
+                        pass
+                    break
+                if not process.is_alive():
+                    break
+                self.screen.timeout(100)
+                key = self.screen.getch()
+                if key == CTRL_X:
+                    if self._confirm_exit():
+                        raise ExitInteractiveMode()
+                    self._draw_loading(progress)
+                elif key == 27 and self._confirm_search_transition(
+                    "Cancel Bitport request?",
+                    "This stops the local request; Bitport may already have accepted it.",
+                ):
+                    raise CancelledError()
+            process.join()
+            if response is None and receiver.poll():
+                try:
+                    response = receiver.recv()
+                except EOFError:
+                    pass
+        except BaseException:
+            self._stop_worker(process)
+            raise
+        finally:
+            self.screen.timeout(-1)
+            receiver.close()
+        if process.exitcode != 0:
+            raise RuntimeError("Bitport request worker stopped unexpectedly.")
+        if response is None:
+            raise RuntimeError("Bitport request worker returned no response.")
+        kind, value = response
+        if kind == "error":
+            raise RuntimeError(value)
+        return value
+
+    @staticmethod
+    def _stop_worker(process: multiprocessing.Process) -> None:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join()
+
+    def _discover_bitport_folders(self) -> List[PutioFolder]:
+        folders = [PutioFolder("", "Root")]
+        queue = [("", "")]
+        visited = {""}
+        while queue:
+            parent_code, parent_path = queue.pop(0)
+            if parent_code:
+                path = "/cloud/" + urllib.parse.quote(parent_code, safe="")
+                parameters = None
+            else:
+                path = "/cloud/byPath"
+                parameters = {"folderPath": base64.b64encode(b"/").decode("ascii")}
+            payload = self._bitport_api_call(
+                "GET",
+                path,
+                parameters,
+                f"Loading Bitport folders… scanning {parent_path or 'Root'}",
+            )
+            for folder in parse_bitport_folders(payload, parent_path):
+                if folder.id in visited:
+                    continue
+                visited.add(folder.id)
+                folders.append(folder)
+                queue.append((folder.id, folder.path))
+        return [folders[0]] + sorted(folders[1:], key=lambda folder: folder.path.casefold())
+
+    def _activate_bitport(self, url: str) -> None:
+        while True:
+            try:
+                folders = self._discover_bitport_folders()
+            except CancelledError:
+                self.status = "Bitport folder discovery cancelled."
+                return
+            except (OSError, RuntimeError) as error:
+                if self._retry_or_return("Bitport error", str(error)):
+                    continue
+                return
+            break
+        folder = self._choose_folder(folders, client="bitport")
+        if folder is None or not self._confirm("Bitport.io", folder.path):
+            return
+        while True:
+            try:
+                self._bitport_api_call(
+                    "POST",
+                    "/transfers",
+                    bitport_transfer_parameters(url, str(folder.id)),
+                    "Creating Bitport transfer…",
+                )
+            except CancelledError:
+                self.status = (
+                    "Bitport transfer request stopped. Check the account; "
+                    "the transfer may already have been accepted."
+                )
+                return
+            except (OSError, RuntimeError) as error:
+                if self._retry_or_return("Bitport error", str(error)):
+                    continue
+                return
+            break
+        self.preferences.bitport_last_folder_code = str(folder.id)
+        preference_notice = self._persist_client("bitport") + self._persist_preferences(
+            {"interactive.clients.bitport": {"last_folder_code": str(folder.id)}}
+        )
+        self.status = f"Transfer submitted to Bitport in {folder.path}." + preference_notice
+        self._show_message("Bitport transfer submitted", self.status)
 
     def _post_submit_cancel(
         self, transfer_id: int, folder_path: str, preference_notice: str = ""
