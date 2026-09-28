@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Restore curses terminal input after cancelling a repeated search so keyboard
   navigation continues to work and escape sequences are not echoed literally.
+- Drain Bitport worker responses while loading folders so large cloud listings
+  cannot stall the destination picker.
+- Stop Jackett installation if its server configuration cannot be updated.
 
 ## [0.3.0] - 2026-07-29 - Interactive search mode
 

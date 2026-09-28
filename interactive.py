@@ -724,13 +724,12 @@ class InteractiveSession:
             pass
         if self.params.query:
             self._perform_search(record=True)
-        else:
-            if not self._search_form(allow_cancel=False):
-                return
+        elif not self._search_form(allow_cancel=False):
+            return
 
         while True:
             self._draw_results()
-            key = screen.getch()
+            key = self.screen.getch()
             if key == CTRL_X:
                 self._request_exit()
             if key == ord("q"):
@@ -767,6 +766,23 @@ class InteractiveSession:
                 self._copy_focused_url()
             elif key in (10, 13, self.curses.KEY_ENTER):
                 self._activate_focused_action()
+
+    def _restart_curses_after_worker(self) -> None:
+        """Restore curses input after the forked worker changes the shared TTY."""
+        reset_prog_mode = getattr(self.curses, "reset_prog_mode", None)
+        cbreak = getattr(self.curses, "cbreak", None)
+        noecho = getattr(self.curses, "noecho", None)
+        if not all(callable(method) for method in (reset_prog_mode, cbreak, noecho)):
+            return
+        reset_prog_mode()
+        cbreak()
+        noecho()
+        self.screen.keypad(True)
+        self.screen.timeout(-1)
+        try:
+            self.curses.curs_set(0)
+        except self.curses.error:
+            pass
 
     def _terminal_ready(self) -> bool:
         height, width = self.screen.getmaxyx()
@@ -1232,13 +1248,9 @@ class InteractiveSession:
                         continue
                     self._stop_search_worker(process)
                     # The forked worker inherits ncurses state. Its termination can
-                    # restore the shared terminal settings, so put the parent TUI
-                    # back into program mode before accepting more keys.
-                    self.curses.endwin()
-                    self.screen = self.curses.initscr()
-                    self.screen.keypad(True)
-                    self.screen.timeout(-1)
+                    # restore the shared terminal settings, so restore program mode.
                     self.status = "Search cancelled."
+                    self._restart_curses_after_worker()
                     return False
                 spinner_index += 1
                 self._draw_loading(
@@ -1900,36 +1912,46 @@ class InteractiveSession:
         )
         process.start()
         sender.close()
-        self._draw_loading(progress)
+        response: Optional[Tuple[str, Any]] = None
         try:
-            while process.is_alive():
+            self._draw_loading(progress)
+            while True:
+                if receiver.poll():
+                    try:
+                        response = receiver.recv()
+                    except EOFError:
+                        pass
+                    break
+                if not process.is_alive():
+                    break
                 self.screen.timeout(100)
                 key = self.screen.getch()
                 if key == CTRL_X:
                     if self._confirm_exit():
-                        self._stop_worker(process)
                         raise ExitInteractiveMode()
                     self._draw_loading(progress)
                 elif key == 27 and self._confirm_search_transition(
                     "Cancel Bitport request?",
                     "This stops the local request; Bitport may already have accepted it.",
                 ):
-                    self._stop_worker(process)
                     raise CancelledError()
             process.join()
-        except KeyboardInterrupt:
+            if response is None and receiver.poll():
+                try:
+                    response = receiver.recv()
+                except EOFError:
+                    pass
+        except BaseException:
             self._stop_worker(process)
             raise
         finally:
             self.screen.timeout(-1)
-        if not process.exitcode == 0:
             receiver.close()
+        if process.exitcode != 0:
             raise RuntimeError("Bitport request worker stopped unexpectedly.")
-        if not receiver.poll():
-            receiver.close()
+        if response is None:
             raise RuntimeError("Bitport request worker returned no response.")
-        kind, value = receiver.recv()
-        receiver.close()
+        kind, value = response
         if kind == "error":
             raise RuntimeError(value)
         return value

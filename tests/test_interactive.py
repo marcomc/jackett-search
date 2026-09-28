@@ -3,6 +3,7 @@
 import errno
 import fcntl
 import json
+import multiprocessing
 import os
 import pty
 import select
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import termios
 import time
+import traceback
 import unittest
 import urllib.parse
 from importlib.machinery import SourceFileLoader
@@ -36,6 +38,67 @@ CLI_LOADER.exec_module(cli)
 
 class InstallationTests(unittest.TestCase):
     """Prove the Makefile installs runtime files independently of the checkout."""
+
+    def test_install_helper_configures_jackett_without_losing_other_settings(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "ServerConfig.json"
+            config_path.write_text('{"APIKey":"keep","LocalBindAddress":"old"}\n', encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "install_support.py"),
+                    "configure-jackett",
+                    str(config_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertEqual(
+                {
+                    "APIKey": "keep",
+                    "LocalBindAddress": "0.0.0.0",
+                    "FlareSolverrUrl": "http://flaresolverr:8191",
+                },
+                json.loads(config_path.read_text(encoding="utf-8")),
+            )
+
+    def test_install_jackett_stops_if_server_config_cannot_be_updated(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory)
+            config_dir = temporary_path / "config"
+            server_config = config_dir / "jackett-config" / "Jackett" / "ServerConfig.json"
+            server_config.parent.mkdir(parents=True)
+            server_config.write_text("invalid JSON\n", encoding="utf-8")
+            fake_bin = temporary_path / "bin"
+            fake_bin.mkdir()
+            fake_docker = fake_bin / "docker"
+            shutil.copy2(ROOT / "tests" / "fixtures" / "fake_docker.py", fake_docker)
+            fake_docker.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "DOCKER_LOG": str(temporary_path / "docker.log"),
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                }
+            )
+            installed = subprocess.run(
+                [
+                    "make",
+                    "--no-print-directory",
+                    "install-jackett",
+                    f"CONFIG_DIR={config_dir}",
+                    f"JACKETT_NATIVE_CONFIG_DIR={temporary_path / 'native'}",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+            )
+            self.assertNotEqual(0, installed.returncode)
+            self.assertNotIn("✓ Installed Jackett compose file", installed.stdout)
 
     def test_default_install_locations_are_user_local(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
@@ -70,10 +133,7 @@ class InstallationTests(unittest.TestCase):
             fake_bin.mkdir()
             docker_log = temporary_path / "docker.log"
             fake_docker = fake_bin / "docker"
-            fake_docker.write_text(
-                '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$DOCKER_LOG"\nexit 0\n',
-                encoding="utf-8",
-            )
+            shutil.copy2(ROOT / "tests" / "fixtures" / "fake_docker.py", fake_docker)
             fake_docker.chmod(0o755)
 
             environment = os.environ.copy()
@@ -208,16 +268,7 @@ class InstallationTests(unittest.TestCase):
             fake_bin.mkdir()
             install_counter = install_root / "install-count"
             fake_install = fake_bin / "install"
-            fake_install.write_text(
-                "#!/bin/sh\n"
-                "count=0\n"
-                'if [ -f "$INSTALL_COUNTER" ]; then count=$(cat "$INSTALL_COUNTER"); fi\n'
-                "count=$((count + 1))\n"
-                'printf \'%s\\n\' "$count" > "$INSTALL_COUNTER"\n'
-                'if [ "$count" -eq 2 ]; then exit 1; fi\n'
-                'exec "$REAL_INSTALL" "$@"\n',
-                encoding="utf-8",
-            )
+            shutil.copy2(ROOT / "tests" / "fixtures" / "fake_install.py", fake_install)
             fake_install.chmod(0o755)
             real_install = shutil.which("install")
             self.assertIsNotNone(real_install)
@@ -409,8 +460,72 @@ class PutioTests(unittest.TestCase):
         self.assertIsNone(interactive._transfer_id({"status": "OK"}))
 
 
+class _IdleScreen:
+    def timeout(self, _milliseconds):
+        pass
+
+    def getch(self):
+        time.sleep(0.01)
+        return -1
+
+
+def _send_large_bitport_listing(_config_path, _method, _path, _parameters, sender):
+    try:
+        sender.send(
+            (
+                "result",
+                {
+                    "status": "success",
+                    "data": [{"folders": [{"code": "folder", "name": "x" * 262144}]}],
+                },
+            )
+        )
+    finally:
+        sender.close()
+
+
+def _exercise_large_bitport_listing(sender):
+    try:
+        session = interactive.InteractiveSession(
+            interactive.SearchParams(), lambda _params: [], Path("missing-config.toml")
+        )
+        session.screen = _IdleScreen()
+        session._draw_loading = mock.Mock()
+        with mock.patch.object(
+            interactive.multiprocessing, "Process", multiprocessing.get_context("fork").Process
+        ), mock.patch.object(interactive, "_run_bitport_worker", _send_large_bitport_listing):
+            payload = session._bitport_api_call("GET", "/cloud/byPath", None, "Loading folders")
+        sender.send(("result", len(payload["data"][0]["folders"][0]["name"])))
+    except Exception as error:
+        sender.send(("error", repr(error)))
+    finally:
+        sender.close()
+
+
 class BitportTests(unittest.TestCase):
     """Validate Bitport API request and OAuth handling without contacting Bitport."""
+
+    @unittest.skipIf(sys.platform == "win32", "Bitport worker regression requires fork")
+    def test_large_folder_listing_does_not_block_the_worker(self):
+        context = multiprocessing.get_context("fork")
+        receiver, sender = context.Pipe(duplex=False)
+        process = context.Process(target=_exercise_large_bitport_listing, args=(sender,))
+        try:
+            process.start()
+            sender.close()
+            self.assertTrue(receiver.poll(5), "Bitport worker blocked on the large response")
+            self.assertEqual(("result", 262144), receiver.recv())
+            process.join(timeout=5)
+            self.assertEqual(0, process.exitcode)
+        finally:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            sender.close()
+            receiver.close()
 
     def test_default_filter_is_magnets_and_can_be_configured(self):
         self.assertEqual("magnets", interactive.SearchParams().result_filter)
@@ -1789,6 +1904,35 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertIn("Preference was not saved", session.status)
 
 
+def _run_cancelled_refresh_fixture(home):
+    config_path = home / ".config" / "jackett-search" / "config.toml"
+    calls_path = home / "search-calls"
+
+    def search(_params):
+        if not calls_path.exists():
+            calls_path.touch()
+            return [
+                {
+                    "Title": "Existing result",
+                    "Size": 1024,
+                    "Seeders": 10,
+                    "Peers": 1,
+                    "Grabs": 1,
+                    "DownloadVolumeFactor": 1.0,
+                    "Tracker": "Fixture",
+                    "MagnetUri": "magnet:?xt=urn:btih:example",
+                    "Link": "https://example.invalid/download",
+                }
+            ]
+        time.sleep(10)
+        return []
+
+    session = interactive.InteractiveSession(
+        interactive.SearchParams("Example"), search, config_path
+    )
+    session.run()
+
+
 @unittest.skipIf(
     sys.platform == "win32", "curses alternate-screen tests require a Unix pseudo-terminal"
 )
@@ -1796,38 +1940,6 @@ class InteractivePtyTests(unittest.TestCase):
     """Exercise the real alternate-screen renderer without external dependencies."""
 
     def test_cancelled_refresh_keeps_curses_input_active(self):
-        child_code = """
-import os
-import time
-from pathlib import Path
-import interactive
-
-home = Path(os.environ["HOME"])
-config_path = home / ".config" / "jackett-search" / "config.toml"
-calls_path = home / "search-calls"
-
-def search(_params):
-    if not calls_path.exists():
-        calls_path.touch()
-        return [{
-            "Title": "Existing result",
-            "Size": 1024,
-            "Seeders": 10,
-            "Peers": 1,
-            "Grabs": 1,
-            "DownloadVolumeFactor": 1.0,
-            "Tracker": "Fixture",
-            "MagnetUri": "magnet:?xt=urn:btih:example",
-            "Link": "https://example.invalid/download",
-        }]
-    time.sleep(10)
-    return []
-
-session = interactive.InteractiveSession(
-    interactive.SearchParams("Example"), search, config_path
-)
-session.run()
-"""
         with tempfile.TemporaryDirectory() as temporary_directory:
             home = Path(temporary_directory)
             config_path = home / ".config" / "jackett-search" / "config.toml"
@@ -1835,16 +1947,21 @@ session.run()
             config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
             child_pid, master = pty.fork()
             if child_pid == 0:
-                environment = os.environ.copy()
-                environment.update({"HOME": str(home), "TERM": "xterm-256color"})
+                os.environ.update({"HOME": str(home), "TERM": "xterm-256color"})
                 os.chdir(ROOT)
-                os.execve(sys.executable, [sys.executable, "-c", child_code], environment)
+                try:
+                    _run_cancelled_refresh_fixture(home)
+                except BaseException:
+                    traceback.print_exc()
+                    sys.stderr.flush()
+                    os._exit(1)
+                os._exit(0)
 
             rendered = bytearray()
 
-            def read_until(marker, timeout):
+            def read_until(marker, timeout, start=0):
                 deadline = time.monotonic() + timeout
-                while marker not in rendered and time.monotonic() < deadline:
+                while marker not in rendered[start:] and time.monotonic() < deadline:
                     ready, _, _ = select.select([master], [], [], 0.1)
                     if not ready:
                         continue
@@ -1854,7 +1971,7 @@ session.run()
                         if error.errno == errno.EIO:
                             break
                         raise
-                self.assertIn(marker, rendered)
+                self.assertIn(marker, rendered[start:])
 
             try:
                 fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
@@ -1872,8 +1989,34 @@ session.run()
                 os.write(master, b"?")
                 read_until(b"Interactive help", 2)
                 self.assertNotIn(b"^[[C", rendered)
-
+                help_end = len(rendered)
+                os.write(master, b"x")
+                read_until(b"Search cancelled.", 2, start=help_end)
                 os.write(master, b"q")
+                deadline = time.monotonic() + 3
+                status = None
+                while status is None and time.monotonic() < deadline:
+                    waited_pid, wait_status = os.waitpid(child_pid, os.WNOHANG)
+                    if waited_pid:
+                        status = wait_status
+                        break
+                    ready, _, _ = select.select([master], [], [], 0.05)
+                    if not ready:
+                        continue
+                    try:
+                        rendered.extend(os.read(master, 65536))
+                    except OSError as error:
+                        if error.errno == errno.EIO:
+                            break
+                        raise
+                self.assertIsNotNone(
+                    status,
+                    "interactive child did not exit after returning from help: "
+                    + repr(bytes(rendered[-1500:])),
+                )
+                child_pid = 0
+                self.assertTrue(os.WIFEXITED(status))
+                self.assertEqual(0, os.WEXITSTATUS(status))
             finally:
                 if child_pid:
                     try:
