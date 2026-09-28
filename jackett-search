@@ -52,9 +52,10 @@ from interactive import (
     SearchParams,
     clear_history,
     history_path_for,
+    load_interactive_preferences,
 )
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -613,7 +614,11 @@ Examples:
 
     if args.interactive:
         result_filter = (
-            "magnets" if args.magnets_only else "torrents" if args.torrent_only else "both"
+            "magnets"
+            if args.magnets_only
+            else "torrents"
+            if args.torrent_only
+            else load_interactive_preferences(config_path).default_filter
         )
         initial_params = SearchParams(
             query=args.query or "",

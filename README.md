@@ -607,6 +607,17 @@ at `1`. A compound sort passed on the command line is preserved for its initial
 search; the first Sort-selector change switches to the first or last supported
 single-field sort, according to direction.
 
+The interactive form defaults to magnet results. Change the default for this
+installation in `config.toml`:
+
+```toml
+[interactive]
+default_filter = "magnets" # also accepts "both" or "torrents"
+```
+
+The Filter selector remains available for each search. A saved history entry
+retains the filter used for that search.
+
 CLI search flags provide initial values when a query is supplied:
 
 ```sh
@@ -660,6 +671,9 @@ The client picker exposes only commands available on `PATH`:
   URL. A selected Torrent URL is a Jackett retrieval link and remains available
   only to the system-default local client until torrent-payload delivery is
   implemented.
+- **Bitport.io** — shown for Magnet actions when `[bitport] access_token` is
+  configured. Bitport receives the magnet through its API; the destination
+  picker loads the account's folders and remembers the last selected folder.
 - **System default application** — `open` on macOS or `xdg-open` on Linux.
 
 Every client action requires confirmation. For put.io, the destination picker
@@ -680,6 +694,28 @@ screen prevents submission entirely. Escape during creation or cancellation
 confirms whether to stop the local command; the remote service may already have
 accepted that request, so check its transfer list after cancellation.
 
+Bitport uses the documented REST API and a per-account OAuth access token. Add
+the token to the active configuration file; never put it in the repository:
+
+```toml
+[bitport]
+access_token = "<access token for this Bitport account>"
+
+[interactive.clients.bitport]
+last_folder_code = "<example-folder-code>"
+```
+
+Register the OAuth application once at Bitport's [application registration
+page](https://bitport.io/api/create-application). Then each Bitport user
+authorizes that application for their own account. The API documents two ways
+to obtain the authorization code: a browser redirect (`authorization_code`) or
+the device flow (`/get-access`, then `grant_type=code`). These are alternative
+authorization flows for the same registered application, not separate app
+registrations. The public documentation does not clarify whether Bitport
+permits a distributed desktop application to share its `client_secret`; confirm
+that with Bitport before packaging OAuth credentials. `jackett-search` stores
+only the resulting account token in the user's local config.
+
 ### Interactive preferences and history
 
 Interactive settings live in the active `config.toml`, without duplicating the
@@ -689,15 +725,21 @@ Jackett API key:
 [interactive]
 persist_query_history = true
 history_limit = 50
+default_filter = "magnets"
 last_client = "putio"
 
 [interactive.clients.putio]
 last_folder_id = 123456789 # example folder ID
+
+[interactive.clients.bitport]
+last_folder_code = "abc123" # example folder code
 ```
 
-`last_client` and `last_folder_id` are written after successful actions. The
-folder ID is revalidated against the live put.io folder list before use; if it
-no longer exists, `Root` is selected instead.
+`last_client` and destination identifiers are written after successful actions.
+The saved `default_filter` affects new searches; restoring a history entry uses
+the filter saved with that entry. Folder choices are revalidated against the
+live provider folder list before use; if a saved folder is gone, `Root` is
+selected instead.
 
 Search history is saved beside the active config as `history.json`, with mode
 `0600`. It contains only query form settings—never the Jackett API key, Magnet
