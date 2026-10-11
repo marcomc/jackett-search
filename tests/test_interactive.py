@@ -219,7 +219,7 @@ class InstallationTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(0, version.returncode, version.stderr)
-            self.assertIn("jackett-search 0.4.0", version.stdout)
+            self.assertIn("jackett-search 0.5.0", version.stdout)
 
             uninstalled = subprocess.run(
                 [
@@ -619,6 +619,158 @@ class BitportTests(unittest.TestCase):
             saved_token = interactive.read_toml_sections(config_path)["bitport"]["access_token"]
             self.assertEqual("token#value", saved_token)
             self.assertEqual(0o600, config_path.stat().st_mode & 0o777)
+
+
+class ResultFilteringTests(unittest.TestCase):
+    """Verify filtered selection, input focus, and URL identity before activation."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.session = interactive.InteractiveSession(
+            interactive.SearchParams("Example"),
+            lambda _params: [],
+            Path(self.directory.name) / "config.toml",
+        )
+        # Real key constants also ensure printable Unicode is never mistaken
+        # for a curses integer key code by the filter editor.
+        import curses
+
+        self.session.curses = curses
+        self.session.screen = mock.Mock()
+        self.session.screen.getmaxyx.return_value = (24, 80)
+        self.session._draw_results = mock.Mock()
+        self.session._configure_colours = mock.Mock()
+
+    def edit(self, keys):
+        self.session.screen.get_wch.side_effect = keys
+        self.session._edit_result_filter()
+
+    def test_literal_unicode_and_full_tracker_title_matching_preserve_identity(self):
+        session = self.session
+        session.results = [
+            {"Title": "First", "MagnetUri": "magnet:first"},
+            {"Title": "x" * 70 + "CAFÉ [1080p]", "Link": "https://example.test/second"},
+            {"Title": "Third", "Tracker": "x" * 30 + "Café [1080p]", "MagnetUri": "magnet:third"},
+        ]
+        session._set_result_filter("café [1080p]")
+        self.assertEqual([1, 2], list(session._visible_result_indices()))
+        self.assertEqual(1, session.cursor_index)
+        self.assertEqual("torrent", session.focused_action)
+        self.assertEqual("https://example.test/second", session._focused_url())
+        session._move_cursor(1)
+        self.assertEqual("magnet:third", session._focused_url())
+        with mock.patch.object(
+            interactive, "copy_to_clipboard", return_value=(True, "Copied")
+        ) as copy:
+            session._copy_focused_url()
+        copy.assert_called_once_with("magnet:third")
+
+    def test_empty_filter_view_has_no_actions_and_clear_restores_all_rows(self):
+        session = self.session
+        session.results = [{"Title": "First", "MagnetUri": "magnet:first"}]
+        session._set_result_filter("missing")
+        self.assertEqual([], list(session._visible_result_indices()))
+        self.assertEqual([], session._available_actions())
+        self.assertIsNone(session._focused_url())
+        self.assertEqual("", session._selected_summary())
+        session._move_cursor(1)
+        session._set_result_filter("")
+        self.assertEqual([0], list(session._visible_result_indices()))
+        self.assertEqual("magnet:first", session._focused_url())
+
+    def test_pages_and_boundaries_navigate_matching_rows(self):
+        session = self.session
+        session.results = [
+            {"Title": f"{'match' if index % 2 else 'other'} {index}"} for index in range(100)
+        ]
+        session._set_result_filter("match")
+        session._navigate_results(session.curses.KEY_NPAGE)
+        self.assertEqual(35, session.cursor_index)
+        session._navigate_results(session.curses.KEY_END)
+        self.assertEqual(99, session.cursor_index)
+        session._navigate_results(session.curses.KEY_DOWN)
+        self.assertEqual(99, session.cursor_index)
+        session._navigate_results(session.curses.KEY_PPAGE)
+        self.assertEqual(65, session.cursor_index)
+        session._navigate_results(session.curses.KEY_HOME)
+        self.assertEqual(1, session.cursor_index)
+        session._navigate_results(session.curses.KEY_UP)
+        self.assertEqual(1, session.cursor_index)
+
+    def test_editing_accepts_command_characters_and_unicode_as_text(self):
+        session = self.session
+        text = "qjkrn/gG? café" + "".join(
+            chr(key) for key in (session.curses.KEY_HOME, session.curses.KEY_ENTER)
+        )
+        session.results = [{"Title": text}, {"Title": "Other"}]
+        keys = list(text) + ["\n"]
+        self.edit(keys)
+        self.assertEqual(text, session.result_filter_text)
+        self.assertEqual([0], list(session._visible_result_indices()))
+        self.assertFalse(session.result_filter_editing)
+
+    def test_cancel_restores_filter_selection_and_action_after_clear_and_navigation(self):
+        session = self.session
+        session.results = [
+            {"Title": "Other", "MagnetUri": "magnet:other"},
+            {"Title": "Match one", "MagnetUri": "magnet:one", "Link": "https://example.test/one"},
+            {"Title": "Match two", "MagnetUri": "magnet:two", "Link": "https://example.test/two"},
+        ]
+        session._set_result_filter("match")
+        session._move_cursor(1)
+        session._move_action(1)
+        self.edit(["\x15", "O", session.curses.KEY_DOWN, "\x1b"])
+        self.assertEqual("match", session.result_filter_text)
+        self.assertEqual(2, session.cursor_index)
+        self.assertEqual("torrent", session.focused_action)
+        self.assertEqual("https://example.test/two", session._focused_url())
+        self.assertFalse(session.result_filter_editing)
+
+    def test_editing_cursor_delete_and_navigation_keep_filter_on_enter(self):
+        session = self.session
+        session.results = [{"Title": "Match one"}, {"Title": "Match two"}]
+        session._set_result_filter("mtch")
+        self.edit(
+            [
+                session.curses.KEY_HOME,
+                session.curses.KEY_RIGHT,
+                "a",
+                session.curses.KEY_END,
+                "x",
+                session.curses.KEY_BACKSPACE,
+                session.curses.KEY_LEFT,
+                session.curses.KEY_DC,
+                "h",
+                session.curses.KEY_DOWN,
+                "\n",
+            ]
+        )
+        self.assertEqual("match", session.result_filter_text)
+        self.assertEqual(1, session.cursor_index)
+
+    def test_results_loop_commits_acts_on_match_and_clears_filter(self):
+        session = self.session
+        session.results = [
+            {"Title": "Other", "MagnetUri": "magnet:other"},
+            {"Title": "Match", "MagnetUri": "magnet:match"},
+        ]
+        session._perform_search = mock.Mock()
+        selected_urls = []
+        session._activate_focused_action = lambda: selected_urls.append(session._focused_url())
+        session.screen.getch.side_effect = [ord("/"), 10, 21, ord("q")]
+        session.screen.get_wch.side_effect = list("match") + ["\n"]
+        session._run(session.screen)
+        self.assertEqual(["magnet:match"], selected_urls)
+        self.assertEqual("", session.result_filter_text)
+        self.assertEqual([0, 1], list(session._visible_result_indices()))
+        session._perform_search.assert_called_once_with(record=True)
+
+    def test_filter_editor_restores_focus_when_interrupted(self):
+        self.session.screen.get_wch.side_effect = KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt):
+            self.session._edit_result_filter()
+        self.assertFalse(self.session.result_filter_editing)
 
 
 class InteractiveStateTests(unittest.TestCase):

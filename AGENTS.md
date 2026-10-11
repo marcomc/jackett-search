@@ -69,6 +69,9 @@ The `.gitignore` already excludes `config.toml` and `*.local`.
   not elapsed-time animation.
 - For cancellable blocking network work, use a separately terminable process
   and verify cancellation plus renderer behavior through a pseudo-terminal.
+- For PTY state-transition tests, assert markers only in output captured after
+  the transition. During bounded child-exit polling, drain readable PTY output
+  so a child cannot block on a full output buffer.
 - Default standalone installs to a configurable user-local prefix. Install all
   local runtime imports outside the source checkout, test an isolated prefix,
   and reserve system-wide installation with `sudo` for an explicit request.

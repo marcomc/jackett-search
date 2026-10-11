@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-11 - Interactive result filtering
+
+### Added
+
+- Add `/` incremental filtering of loaded interactive results by full title or
+  tracker name, with case-insensitive literal matching, a filtered/total count,
+  navigation and actions on matching rows, Enter to retain the filter, Esc to
+  undo edits, and Ctrl-U to clear it.
+
+### Changed
+
+- Make PageUp/PageDown move a full viewport in the results view; retain Ctrl-D
+  for half-page down and Ctrl-U for half-page up when no text filter is active.
+
 ## [0.4.0] - 2026-09-28 - Bitport integration
 
 ### Added

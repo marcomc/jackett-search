@@ -682,6 +682,10 @@ class InteractiveSession:
         self.history_path = history_path_for(config_path)
         self.history = load_history(self.history_path)
         self.results: List[Dict[str, Any]] = []
+        self.result_filter_text = ""
+        self.result_filter_editing = False
+        self.result_filter_position = 0
+        self._filtered_result_indices: List[int] = []
         self.cursor_index = 0
         self.marked_indices: set = set()  # Reserved for a future batch-selection mode.
         self.focused_action = "magnet"
@@ -746,18 +750,12 @@ class InteractiveSession:
                 self._search_form(allow_cancel=True)
             elif key == ord("r"):
                 self._perform_search(record=True)
-            elif key in (self.curses.KEY_UP, ord("k")):
-                self._move_cursor(-1)
-            elif key in (self.curses.KEY_DOWN, ord("j")):
-                self._move_cursor(1)
-            elif key in (self.curses.KEY_PPAGE, 21):
-                self._move_cursor(-self._page_size(half=True))
-            elif key in (self.curses.KEY_NPAGE, 4):
-                self._move_cursor(self._page_size(half=True))
-            elif key in (self.curses.KEY_HOME, ord("g")):
-                self.cursor_index = 0
-            elif key in (self.curses.KEY_END, ord("G")):
-                self.cursor_index = max(0, len(self.results) - 1)
+            elif key == ord("/"):
+                self._edit_result_filter()
+            elif key == 21 and self.result_filter_text:
+                self._set_result_filter("")
+            elif self._navigate_results(key):
+                pass
             elif key in (self.curses.KEY_LEFT, ord("h")):
                 self._move_action(-1)
             elif key in (self.curses.KEY_RIGHT, ord("l")):
@@ -821,13 +819,128 @@ class InteractiveSession:
         return max(1, rows // 2) if half else rows
 
     def _move_cursor(self, delta: int) -> None:
-        if not self.results:
+        indices = self._visible_result_indices()
+        if not indices:
             return
-        self.cursor_index = max(0, min(len(self.results) - 1, self.cursor_index + delta))
+        position = indices.index(self.cursor_index)
+        self.cursor_index = indices[max(0, min(len(indices) - 1, position + delta))]
         self._ensure_action_available()
 
+    def _visible_result_indices(self) -> Sequence[int]:
+        """Keep result identity stable while narrowing the displayed rows."""
+        return (
+            self._filtered_result_indices if self.result_filter_text else range(len(self.results))
+        )
+
+    def _set_result_filter(self, text: str) -> None:
+        """Match literal text against full titles and tracker names, ignoring case."""
+        self.result_filter_text = text
+        needle = text.casefold()
+        self._filtered_result_indices = (
+            [
+                index
+                for index, result in enumerate(self.results)
+                if any(
+                    needle in str(result.get(field) or "").casefold()
+                    for field in ("Title", "Tracker")
+                )
+            ]
+            if text
+            else []
+        )
+        indices = self._visible_result_indices()
+        if self.cursor_index not in indices:
+            self.cursor_index = indices[0] if indices else 0
+        self.status = ""
+        self._ensure_action_available()
+
+    def _navigate_results(self, key: int, editing: bool = False) -> bool:
+        """Navigate the visible rows without treating typed letters as commands."""
+        if key == self.curses.KEY_UP or (not editing and key == ord("k")):
+            self._move_cursor(-1)
+        elif key == self.curses.KEY_DOWN or (not editing and key == ord("j")):
+            self._move_cursor(1)
+        elif key == self.curses.KEY_PPAGE:
+            self._move_cursor(-self._page_size())
+        elif key == self.curses.KEY_NPAGE:
+            self._move_cursor(self._page_size())
+        elif not editing and key in (21, 4):
+            self._move_cursor(self._page_size(half=True) * (-1 if key == 21 else 1))
+        elif not editing and key in (self.curses.KEY_HOME, self.curses.KEY_END, ord("g"), ord("G")):
+            indices = self._visible_result_indices()
+            if indices:
+                self.cursor_index = indices[0 if key in (self.curses.KEY_HOME, ord("g")) else -1]
+                self._ensure_action_available()
+        else:
+            return False
+        return True
+
+    def _edit_result_filter(self) -> None:
+        """Edit a live filter; Enter retains it and Esc restores the previous view."""
+        original_text = self.result_filter_text
+        original_index = self.cursor_index
+        original_action = self.focused_action
+        self.result_filter_editing = True
+        self.result_filter_position = len(self.result_filter_text)
+        try:
+            while True:
+                self._draw_results()
+                key = self.screen.get_wch()
+                code = ord(key) if isinstance(key, str) else key
+                if code == CTRL_X:
+                    self._request_exit()
+                elif code in (10, 13) or key == self.curses.KEY_ENTER:
+                    return
+                elif code == 27:
+                    self._set_result_filter(original_text)
+                    self.cursor_index = original_index
+                    self.focused_action = original_action
+                    return
+                elif code == 21:
+                    self._set_result_filter("")
+                    self.result_filter_position = 0
+                elif code in (127, 8) or key == self.curses.KEY_BACKSPACE:
+                    if self.result_filter_position:
+                        position = self.result_filter_position
+                        self._set_result_filter(
+                            self.result_filter_text[: position - 1]
+                            + self.result_filter_text[position:]
+                        )
+                        self.result_filter_position -= 1
+                elif key == self.curses.KEY_DC:
+                    position = self.result_filter_position
+                    self._set_result_filter(
+                        self.result_filter_text[:position] + self.result_filter_text[position + 1 :]
+                    )
+                elif key == self.curses.KEY_LEFT:
+                    self.result_filter_position = max(0, self.result_filter_position - 1)
+                elif key == self.curses.KEY_RIGHT:
+                    self.result_filter_position = min(
+                        len(self.result_filter_text), self.result_filter_position + 1
+                    )
+                elif key == self.curses.KEY_HOME:
+                    self.result_filter_position = 0
+                elif key == self.curses.KEY_END:
+                    self.result_filter_position = len(self.result_filter_text)
+                elif isinstance(key, str) and key.isprintable():
+                    position = self.result_filter_position
+                    self._set_result_filter(
+                        self.result_filter_text[:position]
+                        + key
+                        + self.result_filter_text[position:]
+                    )
+                    self.result_filter_position += 1
+                else:
+                    self._navigate_results(code, editing=True)
+        finally:
+            self.result_filter_editing = False
+            try:
+                self.curses.curs_set(0)
+            except self.curses.error:
+                pass
+
     def _available_actions(self) -> List[str]:
-        if not self.results:
+        if not self._visible_result_indices():
             return []
         row = self.results[self.cursor_index]
         return [
@@ -1020,13 +1133,19 @@ class InteractiveSession:
             self._minimum_size_message()
             return
         try:
-            self.curses.curs_set(0)
+            self.curses.curs_set(1 if self.result_filter_editing else 0)
         except self.curses.error:
             pass
         self._clear()
         height, width = self.screen.getmaxyx()
         layout = self._result_table_layout(width)
         heading = f"jackett-search interactive — {len(self.results)} result(s)"
+        indices = self._visible_result_indices()
+        if self.result_filter_text:
+            heading = (
+                f"jackett-search interactive — {len(indices)}/{len(self.results)} result(s)"
+                f" — Filter: {self.result_filter_text}"
+            )
         self._add(0, 0, heading, self.curses.A_BOLD)
         if layout.compact_actions:
             header = (
@@ -1045,11 +1164,14 @@ class InteractiveSession:
         self._add(1, 0, header, self.curses.A_BOLD)
         self._add(2, 0, "─" * (width - 1), self.curses.A_DIM)
         visible = self._page_size()
-        top = max(0, min(self.cursor_index - visible // 2, max(0, len(self.results) - visible)))
-        if not self.results:
+        position = indices.index(self.cursor_index) if indices else 0
+        top = max(0, min(position - visible // 2, max(0, len(indices) - visible)))
+        if not indices and self.result_filter_text:
+            self._add(4, 0, "No results match the filter. Press / to edit or Ctrl-U to clear.")
+        elif not self.results:
             self._add(4, 0, "No results found. Press n for a new search or q to quit.")
-        for offset, result in enumerate(self.results[top : top + visible]):
-            index = top + offset
+        for offset, index in enumerate(indices[top : top + visible]):
+            result = self.results[index]
             row = 3 + offset
             selected = index == self.cursor_index
             row_attribute = self.curses.A_REVERSE if selected else 0
@@ -1112,16 +1234,34 @@ class InteractiveSession:
         self._add(
             height - 3,
             0,
-            "↑↓/jk rows  ←→/hl focus Magnet/Torrent  PgUp/PgDn  Home/End  Enter activate  c copy",
+            "↑↓ PgUp/PgDn rows  Printable keys enter filter text  Ctrl-X exit  Ctrl-C quit"
+            if self.result_filter_editing
+            else "↑↓/jk rows  ←→/hl Magnet/Torrent  PgUp/PgDn  Home/End  Enter activate  c copy",
         )
-        self._add(
-            height - 2,
-            0,
-            "n new search  Esc return  Ctrl-X exit  r refresh  ? help  q/Ctrl-C quit",
-            self.curses.A_DIM,
-        )
-        status = self.status or self._selected_summary()
-        self._add(height - 1, 0, _truncate(status, width - 1), self.curses.A_BOLD)
+        if self.result_filter_editing:
+            self._add(
+                height - 2,
+                0,
+                "Enter keep  Esc undo  Ctrl-U clear  ←→ Home/End edit  ↑↓ PgUp/PgDn rows",
+                self.curses.A_DIM,
+            )
+            label = "Filter: "
+            available = width - len(label) - 2
+            start = max(0, self.result_filter_position - available)
+            self._add(height - 1, 0, label + self.result_filter_text[start:], self.curses.A_BOLD)
+            try:
+                self.screen.move(height - 1, len(label) + self.result_filter_position - start)
+            except self.curses.error:
+                pass
+        else:
+            self._add(
+                height - 2,
+                0,
+                "n new  Esc return  r refresh  / filter  Ctrl-U clear  ? help  q quit  Ctrl-X exit",
+                self.curses.A_DIM,
+            )
+            status = self.status or self._selected_summary()
+            self._add(height - 1, 0, _truncate(status, width - 1), self.curses.A_BOLD)
         self.screen.refresh()
 
     @staticmethod
@@ -1136,7 +1276,7 @@ class InteractiveSession:
         return f"{size:.1f} PB"
 
     def _selected_summary(self) -> str:
-        if not self.results:
+        if not self._visible_result_indices():
             return ""
         title = str(self.results[self.cursor_index].get("Title") or "Untitled")
         return f"Selected: {_truncate(title, 70)} — Focus: {self.focused_action.title()} URL"
@@ -1286,6 +1426,8 @@ class InteractiveSession:
                     except OSError as error:
                         self.status = f"Search complete, but history was not saved: {error}"
         self.cursor_index = 0
+        self.result_filter_text = ""
+        self._filtered_result_indices = []
         self.focused_action = "magnet"
         self._ensure_action_available()
         return True
@@ -1507,19 +1649,16 @@ class InteractiveSession:
             "Navigation",
             "  ↑/↓ or j/k       Select result",
             "  ←/→ or h/l       Select Magnet/Torrent",
-            "  PageUp/PageDown   Move one page",
-            "  Home/End or g/G   First/last result",
-            "  Ctrl-U/Ctrl-D     Half-page up/down",
-            "",
+            "  PgUp/PgDn; Home/End or g/G   Page; first/last result",
+            "  Ctrl-U clear active filter / half-page up; Ctrl-D half-page down",
+            "Filtering",
+            "  / edit live title/tracker filter; Enter keep; Esc undo",
+            "  Ctrl-U clear; ↑↓ PgUp/PgDn rows; ←→ Home/End edit text",
             "Actions",
-            "  Enter             Choose client and act",
-            "  c                 Copy selected URL",
-            "  n                 New search",
-            "  r                 Repeat current search",
-            "  q                 Exit from results",
-            "  Ctrl-X            Confirm exit from any screen",
-            "  Ctrl-C            Exit immediately",
-            "  Esc               Confirm cancel/return to the search form",
+            "  Enter choose client and act; c copy selected URL",
+            "  n new search; r repeat current search",
+            "  q exit from results; Ctrl-X confirm exit; Ctrl-C exit immediately",
+            "  Esc confirm cancel/return to the search form",
         ]
         self._clear()
         self._add(0, 0, "Interactive help", self.curses.A_BOLD)
@@ -1531,7 +1670,7 @@ class InteractiveSession:
             self._request_exit()
 
     def _focused_url(self) -> Optional[str]:
-        if not self.results:
+        if not self._visible_result_indices():
             return None
         key = "MagnetUri" if self.focused_action == "magnet" else "Link"
         value = self.results[self.cursor_index].get(key)

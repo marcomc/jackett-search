@@ -147,7 +147,7 @@ jackett-search --interactive --magnets-only --sort "dlf,seeders" --limit 30 "<pl
 
 ### Navigation
 
-Esc always presents a confirmation before cancelling an in-progress search or
+Esc presents a confirmation before cancelling an in-progress search or
 leaving completed results for the search form. `Ctrl-X` presents an exit
 confirmation from any TUI screen, including editable forms; `Ctrl-C` exits
 immediately. Cancelling either confirmation keeps the current search unchanged.
@@ -158,7 +158,9 @@ immediately. Cancelling either confirmation keeps the current search unchanged.
 | `←`/`→`, `h`/`l` | Focus the Magnet or Torrent action |
 | `PageUp`/`PageDown` | Move one page |
 | `Home`/`End`, `g`/`G` | Jump to the first or last row |
-| `Ctrl-U`/`Ctrl-D` | Move half a page |
+| `/` | Open or edit the live text filter |
+| `Ctrl-U` | Clear an active text filter; otherwise move half a page up |
+| `Ctrl-D` | Move half a page down |
 | `Enter` | Choose a client and confirm the focused action |
 | `c` | Copy the focused URL to the system clipboard |
 | `n` | Open a new search form, preserving previous values |
@@ -168,6 +170,22 @@ immediately. Cancelling either confirmation keeps the current search unchanged.
 | `Ctrl-X` | Confirm exit from any TUI screen, including forms |
 | `Ctrl-C` | Exit interactive mode immediately |
 | `Esc` | Confirm cancellation of a running search or return to the search form |
+
+Press `/` in the results view to open a filter at the bottom of the screen.
+Typing narrows the loaded results immediately, using case-insensitive literal
+substring matching against full titles and tracker names, including text
+truncated in the table. No new Jackett requests are made. The heading shows
+the filter and matching/total result count; row numbers retain their original
+positions. Copying or activating an action uses the selected matching row.
+
+While editing, every printable key is text, including `/`, `q`, `j`, and `k`.
+Use Up/Down and PageUp/PageDown to navigate matching rows; Left/Right and
+Home/End move within the filter text. Backspace and Delete edit it, and Ctrl-U
+clears it. Enter ends editing and retains the filter, restoring the usual
+navigation and action keys. Esc undoes the current edit and restores the
+previous filter, selection, and action focus. Press `/` again to edit a
+retained filter, or Ctrl-U in the results view to clear it. A completed new
+search or refresh resets the text filter; cancelling a search keeps it.
 
 On terminals wide enough for the full table, its title, size, numeric, DLF,
 and tracker columns use the same widths and semantic colours as normal table
