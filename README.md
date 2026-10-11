@@ -8,6 +8,7 @@ put.io and Bitport.io.
 ## Table of Contents
 
 - [Overview](#overview)
+- [Usage](#usage)
 - [Documentation](#documentation)
 - [License](#license)
 
@@ -16,6 +17,19 @@ put.io and Bitport.io.
 The app connects to a local Jackett instance. Install and configure Jackett and
 `jackett-search` first, then use the command line or interactive mode to search
 and choose where supported magnet downloads should be sent.
+
+## Usage
+
+```sh
+jackett-search --interactive
+```
+
+After searching, press `/` to filter loaded results by title or tracker as you
+type. Press Enter to keep the filter and navigate with arrows, PageUp/PageDown,
+or Home/End. Press `/` again to edit, Esc to undo the edit, or Ctrl-U to clear
+the filter. Filtering is case-insensitive literal text and makes no new
+Jackett requests. See [interactive navigation](docs/usage.md#navigation) for
+all keys.
 
 ## Documentation
 
