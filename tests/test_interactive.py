@@ -7,6 +7,7 @@ import json
 import multiprocessing
 import os
 import pty
+import re
 import select
 import shutil
 import signal
@@ -220,7 +221,13 @@ class InstallationTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(0, version.returncode, version.stderr)
-            self.assertIn("jackett-search 0.5.0", version.stdout)
+            metadata = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+            project_section = metadata.split("[project]", 1)[1].split("[", 1)[0]
+            metadata_version = re.search(r'^version\s*=\s*"([^"]+)"', project_section, re.MULTILINE)
+            self.assertIsNotNone(metadata_version)
+            self.assertEqual("0.6.0", metadata_version.group(1))
+            self.assertEqual(metadata_version.group(1), cli.VERSION)
+            self.assertEqual(f"jackett-search {metadata_version.group(1)}\n", version.stdout)
 
             uninstalled = subprocess.run(
                 [
