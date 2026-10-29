@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Combine results with matching non-empty info hashes after sorting, list their
+  contributing trackers in CLI, interactive, and JSON output, and apply limits
+  to the deduplicated results. Preserve configured indexer order for sort ties,
+  so response timing does not change the representative or tracker list.
+  [Portfolio issue #396](https://github.com/marcomc/portfolio-ops/issues/396).
+  <!-- portfolio:id=bdc90fc9-49f4-486f-a5cd-7a4732481296 -->
+
 ## [0.5.0] - 2026-10-11 - Interactive result filtering
 
 ### Added

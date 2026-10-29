@@ -840,9 +840,10 @@ class InteractiveSession:
             [
                 index
                 for index, result in enumerate(self.results)
-                if any(
-                    needle in str(result.get(field) or "").casefold()
-                    for field in ("Title", "Tracker")
+                if needle in str(result.get("Title") or "").casefold()
+                or any(
+                    needle in str(tracker).casefold()
+                    for tracker in result.get("Trackers") or [result.get("Tracker") or ""]
                 )
             ]
             if text
@@ -1198,7 +1199,8 @@ class InteractiveSession:
                 seed_attribute = self._colour_attribute("green") | self.curses.A_BOLD
             elif seeds >= 10:
                 seed_attribute = self._colour_attribute("yellow")
-            tracker = _truncate(str(result.get("Tracker") or ""), layout.tracker_width)
+            tracker_names = result.get("Trackers") or [result.get("Tracker") or ""]
+            tracker = _truncate(", ".join(tracker_names), layout.tracker_width)
             seeds_text = _truncate(str(seeds), layout.seeds_width)
             leechers_text = _truncate(str(leechers), layout.leechers_width)
             grabs_text = _truncate(str(grabs), layout.grabs_width)

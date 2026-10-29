@@ -15,6 +15,11 @@ supported terminal (iTerm2, Terminal.app macOS 12+, kitty, WezTerm):
 - **🧲 magnet** — click to open the magnet URI in your torrent client
 - **📄 torrent** — click to download the `.torrent` file via Jackett proxy
 
+Results with the same non-empty `InfoHash` are combined after sorting and
+before `--limit` is applied. The first sorted result supplies the displayed
+fields and singular tracker; its tracker column also lists each contributing
+indexer once. Results without an info hash remain separate.
+
 Colour coding:
 
 - **Seeder count** — green ≥ 100, yellow ≥ 10, dim-red < 10
@@ -285,6 +290,7 @@ jackett-search --json "<placeholder>" | jq '.[] | select(.seeders > 100)'
 | --- | --- |
 | `title` | Torrent name |
 | `tracker` | Jackett indexer that returned the result |
+| `trackers` | Ordered unique indexers contributing this info hash |
 | `size` / `size_bytes` | Human-readable size and raw bytes |
 | `seeders` | Active seeders (S) |
 | `leechers` | Leechers (L) |

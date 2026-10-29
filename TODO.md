@@ -4,8 +4,6 @@ Planned improvements, roughly prioritised.
 
 ## High priority
 
-- [ ] **Result deduplication** — collapse identical torrents returned by
-  multiple indexers (match on `InfoHash`); show a merged `Trackers` list.
 - [ ] **`--category` filter** — accept a Jackett category string or ID
   (e.g. `TV`, `Movies`, `2000`) and pass it as the `Category[]` query
   parameter to each indexer.

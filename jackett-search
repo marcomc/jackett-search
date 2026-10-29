@@ -225,6 +225,31 @@ def sort_results(results, sort_str):
     return sorted(results, key=make_comparator(specs))
 
 
+def deduplicate_results(results):
+    """Collapse matching info hashes while retaining sorted representative order."""
+    deduplicated = []
+    by_hash = {}
+    for result in results:
+        info_hash = result.get("InfoHash")
+        normalized_hash = info_hash.strip().casefold() if isinstance(info_hash, str) else ""
+        if not normalized_hash:
+            deduplicated.append(result)
+            continue
+
+        representative = by_hash.get(normalized_hash)
+        tracker = result.get("Tracker")
+        if representative is None:
+            representative = result.copy()
+            representative["Trackers"] = []
+            deduplicated.append(representative)
+            by_hash[normalized_hash] = representative
+
+        if isinstance(tracker, str) and tracker and tracker not in representative["Trackers"]:
+            representative["Trackers"].append(tracker)
+
+    return deduplicated
+
+
 # ── Search ──────────────────────────────────────────────────────────────────────
 
 DEFAULT_TIMEOUT = 10  # seconds per indexer; 0 = wait forever
@@ -286,20 +311,23 @@ def search(
             file=sys.stderr,
         )
 
-    all_results = []
+    results_by_indexer = [[] for _ in indexer_ids]
     completed_indexers = 0
     if progress_callback is not None:
         progress_callback(completed_indexers, len(indexer_ids))
     with ThreadPoolExecutor(max_workers=len(indexer_ids)) as pool:
         futures = {
-            pool.submit(query_indexer, url, api_key, iid, query, timeout): iid
-            for iid in indexer_ids
+            pool.submit(query_indexer, url, api_key, iid, query, timeout): index
+            for index, iid in enumerate(indexer_ids)
         }
         for future in as_completed(futures):
-            all_results.extend(future.result())
+            results_by_indexer[futures[future]] = future.result()
             completed_indexers += 1
             if progress_callback is not None:
                 progress_callback(completed_indexers, len(indexer_ids))
+
+    # Keep stable-sort ties independent of network completion order.
+    all_results = [result for batch in results_by_indexer for result in batch]
 
     # ── filter ──
     if magnets_only:
@@ -309,6 +337,9 @@ def search(
 
     # ── sort ──
     all_results = sort_results(all_results, sort)
+
+    # ── deduplicate ──
+    all_results = deduplicate_results(all_results)
 
     if limit:
         all_results = all_results[:limit]
@@ -451,7 +482,8 @@ def print_table(results):
         leeches = r.get("Peers") or 0
         grabs = r.get("Grabs") or 0
         dlf = r.get("DownloadVolumeFactor")
-        tracker = (r.get("Tracker") or "")[:W_TRACKER]
+        tracker_names = r.get("Trackers") or [r.get("Tracker") or ""]
+        tracker = ", ".join(tracker_names)[:W_TRACKER]
 
         # Pre-pad then colour — keeps column alignment intact with ANSI bytes
         seeds_str = colour_seeds(seeds, W_SEEDS)
@@ -494,6 +526,7 @@ def print_json(results):
             {
                 "title": r.get("Title"),
                 "tracker": r.get("Tracker"),
+                "trackers": r.get("Trackers") or ([r["Tracker"]] if r.get("Tracker") else []),
                 "size_bytes": r.get("Size"),
                 "size": format_size(r.get("Size")),
                 "seeders": r.get("Seeders"),
