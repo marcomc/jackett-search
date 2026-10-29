@@ -30,7 +30,7 @@ class IndexerSelectionTests(unittest.TestCase):
             "query": mock.patch.object(
                 cli,
                 "query_indexer",
-                side_effect=lambda _url, _key, indexer, _query, _timeout: [
+                side_effect=lambda _url, _key, indexer, _query, _timeout, _category: [
                     {"Title": indexer, "Seeders": 1}
                 ],
             ),
@@ -82,20 +82,28 @@ class IndexerSelectionTests(unittest.TestCase):
                 cli.parse_indexers(value)
 
     def test_search_queries_only_selected_indexers_and_counts_their_progress(self):
-        for selection, expected in (
-            (None, CONFIGURED_IDS),
-            (["yts"], ["yts"]),
-            (cli.parse_indexers(" yts,1337x,yts "), ["yts", "1337x"]),
+        for selection, expected, category in (
+            (None, CONFIGURED_IDS, None),
+            (["yts"], ["yts"], "TV"),
+            (cli.parse_indexers(" yts,1337x,yts "), ["yts", "1337x"], None),
         ):
-            with self.subTest(selection=selection):
+            with self.subTest(selection=selection, category=category):
                 self.query.reset_mock()
                 progress = mock.Mock()
                 results = cli.search(
-                    "Example", URL, "test-key", indexers=selection, progress_callback=progress
+                    "Example",
+                    URL,
+                    "test-key",
+                    category=category,
+                    indexers=selection,
+                    progress_callback=progress,
                 )
                 self.assertCountEqual(expected, [result["Title"] for result in results])
                 self.assertCountEqual(
-                    [mock.call(URL, "test-key", indexer, "Example", 10) for indexer in expected],
+                    [
+                        mock.call(URL, "test-key", indexer, "Example", 10, category)
+                        for indexer in expected
+                    ],
                     self.query.call_args_list,
                 )
                 self.assertEqual(
@@ -134,7 +142,7 @@ class IndexerSelectionTests(unittest.TestCase):
                     results = cli.search(
                         "Example", URL, "test-key", quiet=quiet, progress_callback=progress
                     )
-                self.query.assert_called_once_with(URL, "test-key", "all", "Example", 10)
+                self.query.assert_called_once_with(URL, "test-key", "all", "Example", 10, None)
                 self.assertEqual([{"Title": "all", "Seeders": 1}], results)
                 self.assertEqual([mock.call(0, 1), mock.call(1, 1)], progress.call_args_list)
                 if quiet:
@@ -167,7 +175,7 @@ class IndexerSelectionTests(unittest.TestCase):
                     **options,
                 )
                 self.assertEqual([title], [result["Title"] for result in results])
-                self.query.assert_called_once_with(URL, "test-key", "yts", "Example", timeout)
+                self.query.assert_called_once_with(URL, "test-key", "yts", "Example", timeout, None)
 
     def test_cli_selection_limits_json_results(self):
         completed = self.run_cli("--indexer", " yts,1337x,yts ", "--json", "Example")
