@@ -8,6 +8,7 @@ Usage:
   jackett-search --json "<query>"
   jackett-search --magnets-only "<query>"
   jackett-search --torrent-only "<query>"
+  jackett-search --indexer 1337x,yts "<query>"
   jackett-search --timeout 30 "<query>"        # 30 s per indexer
   jackett-search --timeout 0  "<query>"        # no timeout (wait forever)
   jackett-search --sort seeders "<query>"              # default
@@ -230,6 +231,17 @@ def sort_results(results, sort_str):
 DEFAULT_TIMEOUT = 10  # seconds per indexer; 0 = wait forever
 
 
+def parse_indexers(value):
+    """Parse configured indexer IDs, retaining their first-occurrence order."""
+    indexers = [component.strip() for component in value.split(",")]
+    if not all(indexers):
+        raise argparse.ArgumentTypeError(
+            "provide non-empty configured indexer IDs separated by commas "
+            "(e.g. --indexer 1337x,yts); remove empty components."
+        )
+    return list(dict.fromkeys(indexers))
+
+
 def get_indexer_ids(url, api_key):
     """Return list of configured indexer IDs from Jackett."""
     params = urllib.parse.urlencode({"t": "indexers", "configured": "true", "apikey": api_key})
@@ -268,10 +280,24 @@ def search(
     sort=DEFAULT_SORT,
     quiet=False,
     progress_callback=None,
+    indexers=None,
 ):
 
     indexer_ids = get_indexer_ids(url, api_key)
-    if not indexer_ids:
+    if indexers is not None:
+        if not indexer_ids:
+            raise ValueError(
+                "Cannot validate --indexer: could not fetch configured indexers. "
+                "Check the Jackett connection and configuration; no torrent search was issued."
+            )
+        unknown = [indexer for indexer in indexers if indexer not in indexer_ids]
+        if unknown:
+            raise ValueError(
+                f"Unknown configured indexer ID(s) for --indexer: {', '.join(unknown)}. "
+                "Use IDs from the configured indexers in Jackett; no torrent search was issued."
+            )
+        indexer_ids = indexers
+    elif not indexer_ids:
         if not quiet:
             print(
                 "Warning: could not fetch indexer list; falling back to /all",
@@ -575,6 +601,14 @@ Examples:
 
     parser.add_argument("--limit", type=int, default=None, help="Max number of results to show")
     parser.add_argument(
+        "--indexer",
+        dest="indexers",
+        type=parse_indexers,
+        metavar="IDS",
+        help="Comma-separated configured indexer IDs (e.g. 1337x,yts). "
+        "Limit every search in an interactive session to these IDs too.",
+    )
+    parser.add_argument(
         "--magnet",
         type=int,
         metavar="N",
@@ -610,6 +644,7 @@ Examples:
             args.magnets_only,
             args.torrent_only,
             args.limit is not None,
+            args.indexers is not None,
             args.timeout != DEFAULT_TIMEOUT,
             args.sort != DEFAULT_SORT,
         )
@@ -632,6 +667,7 @@ Examples:
                 args.magnets_only,
                 args.torrent_only,
                 args.limit is not None,
+                args.indexers is not None,
                 args.timeout != DEFAULT_TIMEOUT,
                 args.sort != DEFAULT_SORT,
             )
@@ -737,6 +773,7 @@ Examples:
                 sort=params.sort,
                 quiet=True,
                 progress_callback=progress_callback,
+                indexers=args.indexers,
             )
 
         try:
@@ -751,16 +788,20 @@ Examples:
             sys.exit(2)
         return
 
-    results = search(
-        args.query,
-        url,
-        api_key,
-        limit=args.limit,
-        magnets_only=args.magnets_only,
-        torrent_only=args.torrent_only,
-        timeout=args.timeout,
-        sort=args.sort,
-    )
+    try:
+        results = search(
+            args.query,
+            url,
+            api_key,
+            limit=args.limit,
+            magnets_only=args.magnets_only,
+            torrent_only=args.torrent_only,
+            timeout=args.timeout,
+            sort=args.sort,
+            indexers=args.indexers,
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     if args.magnet:
         idx = args.magnet - 1

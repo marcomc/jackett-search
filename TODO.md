@@ -12,8 +12,6 @@ Planned improvements, roughly prioritised.
 
 ## Medium priority
 
-- [ ] **`--indexer` flag** — query only a named subset of configured indexers
-  instead of all of them (e.g. `--indexer 1337x,yts`).
 - [ ] **`--open` flag** — pipe the selected magnet URI to `open` (macOS) /
   `xdg-open` (Linux) to launch it directly in the default torrent client.
 - [ ] **`--output FILE`** — write JSON results to a file in addition to
