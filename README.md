@@ -23,7 +23,16 @@ and choose where supported magnet downloads should be sent.
 
 ```sh
 jackett-search --interactive
+jackett-search --indexer 1337x,yts "<placeholder>"
+jackett-search --interactive --indexer 1337x,yts
 ```
+
+Use `--indexer IDS` to search only the listed configured Jackett indexer IDs.
+The selection applies to every search in an interactive session. Whitespace
+is trimmed and duplicate IDs are queried once. Empty components, unknown IDs,
+or unavailable indexer discovery cause an error before any torrent search.
+Omit the flag to search all indexers with the existing discovery fallback.
+Replace `<placeholder>` with your query and use IDs configured in your Jackett.
 
 After searching, press `/` to filter loaded results by title or tracker as you
 type. Press Enter to keep the filter and navigate with arrows, PageUp/PageDown,

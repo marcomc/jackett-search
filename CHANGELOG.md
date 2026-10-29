@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and retain it across searches in an interactive session without an editor.
   [Portfolio issue #398](https://github.com/marcomc/portfolio-ops/issues/398).
   <!-- portfolio:id=0c142638-7203-4e4e-b82f-90ddb7375f01 -->
+- Add `--indexer 1337x,yts` to limit CLI searches and every interactive search
+  to selected configured Jackett indexers, with validation before searching.
+  [Portfolio issue #399](https://github.com/marcomc/portfolio-ops/issues/399).
+  <!-- portfolio:id=f6cc5259-9752-4797-8b1b-448e7e612b7f -->
 
 ## [0.5.0] - 2026-10-11 - Interactive result filtering
 
