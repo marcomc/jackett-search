@@ -177,6 +177,49 @@ class IndexerSelectionTests(unittest.TestCase):
                 self.assertEqual([title], [result["Title"] for result in results])
                 self.query.assert_called_once_with(URL, "test-key", "yts", "Example", timeout, None)
 
+    def test_selected_category_deduplicates_in_indexer_order_before_limit(self):
+        fixtures = {
+            "yts": [
+                {
+                    "Title": "Selected representative",
+                    "Tracker": "YTS",
+                    "InfoHash": "abc",
+                    "Seeders": 10,
+                }
+            ],
+            "1337x": [
+                {"Title": "Later duplicate", "Tracker": "1337x", "InfoHash": "ABC", "Seeders": 10},
+                {"Title": "Distinct", "Tracker": "1337x", "InfoHash": "def", "Seeders": 8},
+            ],
+        }
+
+        def reverse_completion(futures):
+            return reversed(list(futures))
+
+        self.query.side_effect = lambda _url, _key, indexer, _query, _timeout, _category: fixtures[
+            indexer
+        ]
+        with mock.patch.object(cli, "as_completed", side_effect=reverse_completion):
+            results = cli.search(
+                "Example",
+                URL,
+                "test-key",
+                category="TV",
+                indexers=["yts", "1337x"],
+                limit=1,
+                quiet=True,
+            )
+
+        self.assertEqual(["Selected representative"], [result["Title"] for result in results])
+        self.assertEqual(["YTS", "1337x"], results[0]["Trackers"])
+        self.assertCountEqual(
+            [
+                mock.call(URL, "test-key", "yts", "Example", 10, "TV"),
+                mock.call(URL, "test-key", "1337x", "Example", 10, "TV"),
+            ],
+            self.query.call_args_list,
+        )
+
     def test_cli_selection_limits_json_results(self):
         completed = self.run_cli("--indexer", " yts,1337x,yts ", "--json", "Example")
         self.assertEqual(0, completed.returncode, completed.stderr)

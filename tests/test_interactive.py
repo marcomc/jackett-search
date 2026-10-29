@@ -2,6 +2,7 @@
 
 import errno
 import fcntl
+import io
 import json
 import multiprocessing
 import os
@@ -1706,7 +1707,8 @@ class InteractiveStateTests(unittest.TestCase):
                     "Peers": 4,
                     "Grabs": 2,
                     "DownloadVolumeFactor": 0.0,
-                    "Tracker": "Example Tracker",
+                    "Tracker": "Ex",
+                    "Trackers": ["Ex", "Two"],
                     "MagnetUri": "magnet:?xt=urn:btih:one",
                     "Link": "https://example.test/file.torrent",
                 },
@@ -1723,6 +1725,7 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertIn("T torrent   ", rendered)
             self.assertIn("T —         ", rendered)
             self.assertTrue(any("Title" in text and "Tracker" in text for text in rendered))
+            self.assertTrue(any("Ex, Two" in text for text in rendered))
             self.assertTrue(
                 any(text == f"{120:>{interactive.RESULT_SEEDS_WIDTH}}" for text in rendered)
             )
@@ -2452,6 +2455,109 @@ class ExistingCliTests(unittest.TestCase):
         ]
         self.assertEqual("high", cli.sort_results(results, "seeders")[0]["Title"])
         self.assertEqual("1.0 KB", cli.format_size(1024))
+
+    def test_search_deduplicates_after_sorting_and_before_limit(self):
+        fixture_results = [
+            {"Title": "Lower duplicate", "Tracker": "Alpha", "InfoHash": " abc ", "Seeders": 4},
+            {"Title": "Representative", "Tracker": "Beta", "InfoHash": "ABC", "Seeders": 20},
+            {"Title": "Repeated tracker", "Tracker": "Beta", "InfoHash": "abc", "Seeders": 3},
+            {"Title": "Distinct", "Tracker": "Gamma", "InfoHash": "def", "Seeders": 10},
+            {"Title": "Missing hash one", "Tracker": "Delta", "Seeders": 8},
+            {"Title": "Missing hash two", "Tracker": "Epsilon", "Seeders": 6},
+            {"Title": "Empty hash", "Tracker": "Zeta", "InfoHash": "  ", "Seeders": 5},
+        ]
+        with mock.patch.object(cli, "get_indexer_ids", return_value=["fixture"]), mock.patch.object(
+            cli, "query_indexer", return_value=fixture_results
+        ):
+            results = cli.search(
+                "Example",
+                "http://jackett.example.test:9117",
+                "test-key",
+                limit=3,
+                quiet=True,
+            )
+
+        self.assertEqual(
+            ["Representative", "Distinct", "Missing hash one"],
+            [result["Title"] for result in results],
+        )
+        self.assertEqual("Beta", results[0]["Tracker"])
+        self.assertEqual(["Beta", "Alpha"], results[0]["Trackers"])
+
+        with mock.patch.object(cli, "get_indexer_ids", return_value=["fixture"]), mock.patch.object(
+            cli, "query_indexer", return_value=fixture_results
+        ):
+            all_results = cli.search(
+                "Example", "http://jackett.example.test:9117", "test-key", quiet=True
+            )
+        self.assertEqual(5, len(all_results))
+        self.assertEqual("Missing hash two", all_results[3]["Title"])
+        self.assertEqual("Empty hash", all_results[4]["Title"])
+
+    def test_deduplication_ties_preserve_indexer_order_regardless_of_completion(self):
+        fixtures = {
+            "first": [{"Title": "First", "Tracker": "Alpha", "InfoHash": " abc ", "Seeders": 10}],
+            "second": [{"Title": "Second", "Tracker": "Beta", "InfoHash": "ABC", "Seeders": 10}],
+        }
+        for reverse_completion in (False, True):
+            with self.subTest(reverse_completion=reverse_completion):
+                progress = []
+
+                def completion_order(futures):
+                    submitted = list(futures)
+                    return reversed(submitted) if reverse_completion else iter(submitted)
+
+                with mock.patch.object(
+                    cli, "get_indexer_ids", return_value=["first", "second"]
+                ), mock.patch.object(
+                    cli,
+                    "query_indexer",
+                    side_effect=lambda _url, _key, iid, _query, _timeout, _category: fixtures[iid],
+                ), mock.patch.object(cli, "as_completed", side_effect=completion_order):
+                    results = cli.search(
+                        "Example",
+                        "http://jackett.example.test:9117",
+                        "test-key",
+                        sort="seeders",
+                        limit=1,
+                        quiet=True,
+                        progress_callback=lambda done, total: progress.append((done, total)),
+                    )
+
+                self.assertEqual("First", results[0]["Title"])
+                self.assertEqual("Alpha", results[0]["Tracker"])
+                self.assertEqual(["Alpha", "Beta"], results[0]["Trackers"])
+                self.assertEqual([(0, 2), (1, 2), (2, 2)], progress)
+
+    def test_cli_and_json_render_merged_trackers_while_preserving_tracker(self):
+        result = {
+            "Title": "Representative",
+            "Tracker": "Beta",
+            "Trackers": ["Beta", "Alpha"],
+            "InfoHash": "abc",
+            "Seeders": 20,
+        }
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+            cli.print_table([result])
+            self.assertIn("Beta, Alpha", output.getvalue())
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+            cli.print_json([result])
+            rendered = json.loads(output.getvalue())
+        self.assertEqual("Beta", rendered[0]["tracker"])
+        self.assertEqual(["Beta", "Alpha"], rendered[0]["trackers"])
+
+    def test_interactive_filter_matches_merged_tracker_names(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                Path(temporary_directory) / "config.toml",
+            )
+            session.results = [
+                {"Title": "Representative", "Tracker": "Beta", "Trackers": ["Beta", "Alpha"]}
+            ]
+            session._set_result_filter("alpha")
+            self.assertEqual([0], list(session._visible_result_indices()))
 
     def test_config_loader_returns_active_path_with_credentials(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [Portfolio issue #399](https://github.com/marcomc/portfolio-ops/issues/399).
   <!-- portfolio:id=f6cc5259-9752-4797-8b1b-448e7e612b7f -->
 
+### Changed
+
+- Combine results with matching non-empty info hashes after sorting, list their
+  contributing trackers in CLI, interactive, and JSON output, and apply limits
+  to the deduplicated results. Preserve configured indexer order for sort ties,
+  so response timing does not change the representative or tracker list.
+  [Portfolio issue #396](https://github.com/marcomc/portfolio-ops/issues/396).
+  <!-- portfolio:id=bdc90fc9-49f4-486f-a5cd-7a4732481296 -->
+
 ## [0.5.0] - 2026-10-11 - Interactive result filtering
 
 ### Added

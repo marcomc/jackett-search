@@ -38,8 +38,10 @@ After searching, press `/` to filter loaded results by title or tracker as you
 type. Press Enter to keep the filter and navigate with arrows, PageUp/PageDown,
 or Home/End. Press `/` again to edit, Esc to undo the edit, or Ctrl-U to clear
 the filter. Filtering is case-insensitive literal text and makes no new
-Jackett requests. See [interactive navigation](docs/usage.md#navigation) for
-all keys.
+Jackett requests. Results with the same non-empty info hash are combined after
+sorting, with contributing indexers shown in the tracker column. See
+[interactive navigation](docs/usage.md#navigation) for all keys and
+[JSON output fields](docs/usage.md#json-output-fields) for output details.
 
 Use `--category VALUE` with one non-empty Jackett category name or ID (for
 example, `TV`, `Movies`, or `2000`). The value is passed verbatim as `Category[]`
