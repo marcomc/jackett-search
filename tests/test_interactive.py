@@ -2308,6 +2308,117 @@ class CliGuardrailTests(unittest.TestCase):
         session_class.return_value.run.assert_called_once_with()
 
 
+class CategoryTests(unittest.TestCase):
+    """Verify opaque categories through CLI, session state, and mocked HTTP requests."""
+
+    def test_category_requests_cover_multiple_indexers_and_all_fallback(self):
+        for indexers in (["first", "second"], []):
+            for category in (None, "TV", "Movies", "2000", " TV & Movies/日本+? "):
+                with self.subTest(indexers=indexers, category=category):
+                    requests = []
+
+                    def respond(endpoint, **_kwargs):
+                        requests.append(endpoint)
+                        response = mock.MagicMock()
+                        if "/torznab/api?" in endpoint:
+                            payload = (
+                                "<indexers>"
+                                + "".join(f'<indexer id="{iid}" />' for iid in indexers)
+                                + "</indexers>"
+                            ).encode()
+                        else:
+                            payload = b'{"Results": [{"Title": "Example"}]}'
+                        response.__enter__.return_value.read.return_value = payload
+                        return response
+
+                    arguments = ["jackett-search", "--json", "Example"]
+                    if category is not None:
+                        arguments.extend(["--category", category])
+                    with mock.patch.object(
+                        cli, "load_config", return_value=("http://jackett.test", "test-key", None)
+                    ), mock.patch.object(
+                        cli.urllib.request, "urlopen", side_effect=respond
+                    ), mock.patch.object(sys, "argv", arguments), mock.patch(
+                        "sys.stdout"
+                    ), mock.patch("sys.stderr"):
+                        cli.main()
+
+                    discovery = (
+                        "http://jackett.test/api/v2.0/indexers/all/results/torznab/api?"
+                        "t=indexers&configured=true&apikey=test-key"
+                    )
+                    self.assertEqual(discovery, requests[0])
+                    parameters = {"apikey": "test-key", "Query": "Example"}
+                    if category is not None:
+                        parameters["Category[]"] = category
+                    expected = {
+                        f"http://jackett.test/api/v2.0/indexers/{iid}/results?"
+                        + urllib.parse.urlencode(parameters)
+                        for iid in indexers or ["all"]
+                    }
+                    self.assertEqual(expected, set(requests[1:]))
+                    self.assertEqual(len(expected) + 1, len(requests))
+                    for endpoint in requests[1:]:
+                        decoded = urllib.parse.parse_qs(urllib.parse.urlsplit(endpoint).query)
+                        if category is not None:
+                            self.assertIn("Category%5B%5D=", endpoint)
+                            self.assertEqual([category], decoded["Category[]"])
+                        else:
+                            self.assertNotIn("Category[]", decoded)
+
+    def test_category_rejects_empty_missing_and_non_search_arguments(self):
+        runner = CliGuardrailTests().run_cli
+        for arguments in (
+            ("--category", "", "Example"),
+            ("--category", "   ", "Example"),
+            ("Example", "--category"),
+            ("--clear-history", "--category", "TV"),
+            ("--bitport-auth", "--category", "TV"),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(2, runner(*arguments).returncode)
+        help_result = runner("--help")
+        self.assertEqual(0, help_result.returncode)
+        self.assertIn("--category VALUE", help_result.stdout)
+        self.assertIn("Category[]", help_result.stdout)
+
+    def test_interactive_category_survives_repeated_form_searches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.toml"
+
+            def run_session(session):
+                session.screen = mock.Mock()
+                session.screen.getmaxyx.return_value = (24, 100)
+                session.screen.getch.return_value = 10
+                session.curses = SimpleNamespace(
+                    A_BOLD=0, A_DIM=0, KEY_BTAB=353, KEY_ENTER=343, curs_set=mock.Mock()
+                )
+                session._perform_search = mock.Mock(
+                    side_effect=lambda **_kwargs: session.progress_search_callback(
+                        session.params, None
+                    )
+                )
+                for query in ("First", "Second"):
+                    session.params.query = query
+                    self.assertTrue(session._search_form(allow_cancel=False))
+                    self.assertEqual("TV", session.params.category)
+                    self.assertNotIn("category", session.params.to_history())
+
+            with mock.patch.object(
+                cli, "load_config", return_value=("http://jackett.test", "test-key", config_path)
+            ), mock.patch.object(
+                cli.InteractiveSession, "run", autospec=True, side_effect=run_session
+            ), mock.patch.object(cli, "search", return_value=[]) as search, mock.patch.object(
+                sys, "argv", ["jackett-search", "--interactive", "--category", "TV"]
+            ):
+                cli.main()
+
+            self.assertEqual(["First", "Second"], [call.args[0] for call in search.call_args_list])
+            self.assertEqual(
+                ["TV", "TV"], [call.kwargs["category"] for call in search.call_args_list]
+            )
+
+
 class ExistingCliTests(unittest.TestCase):
     """Keep existing non-interactive sorting, formatting, and config behaviour covered."""
 
@@ -2318,7 +2429,7 @@ class ExistingCliTests(unittest.TestCase):
         ), mock.patch.object(
             cli,
             "query_indexer",
-            side_effect=lambda _url, _api_key, indexer_id, _query, _timeout: [
+            side_effect=lambda _url, _api_key, indexer_id, _query, _timeout, _category: [
                 {"Title": indexer_id, "Seeders": 1}
             ],
         ):
@@ -2401,7 +2512,7 @@ class ExistingCliTests(unittest.TestCase):
                 ), mock.patch.object(
                     cli,
                     "query_indexer",
-                    side_effect=lambda _url, _key, iid, _query, _timeout: fixtures[iid],
+                    side_effect=lambda _url, _key, iid, _query, _timeout, _category: fixtures[iid],
                 ), mock.patch.object(cli, "as_completed", side_effect=completion_order):
                     results = cli.search(
                         "Example",

@@ -9,6 +9,7 @@ put.io and Bitport.io.
 
 - [Overview](#overview)
 - [Usage](#usage)
+- [Examples](#examples)
 - [Documentation](#documentation)
 - [License](#license)
 
@@ -22,7 +23,16 @@ and choose where supported magnet downloads should be sent.
 
 ```sh
 jackett-search --interactive
+jackett-search --indexer 1337x,yts "<placeholder>"
+jackett-search --interactive --indexer 1337x,yts
 ```
+
+Use `--indexer IDS` to search only the listed configured Jackett indexer IDs.
+The selection applies to every search in an interactive session. Whitespace
+is trimmed and duplicate IDs are queried once. Empty components, unknown IDs,
+or unavailable indexer discovery cause an error before any torrent search.
+Omit the flag to search all indexers with the existing discovery fallback.
+Replace `<placeholder>` with your query and use IDs configured in your Jackett.
 
 After searching, press `/` to filter loaded results by title or tracker as you
 type. Press Enter to keep the filter and navigate with arrows, PageUp/PageDown,
@@ -32,6 +42,21 @@ Jackett requests. Results with the same non-empty info hash are combined after
 sorting, with contributing indexers shown in the tracker column. See
 [interactive navigation](docs/usage.md#navigation) for all keys and
 [JSON output fields](docs/usage.md#json-output-fields) for output details.
+
+Use `--category VALUE` with one non-empty Jackett category name or ID (for
+example, `TV`, `Movies`, or `2000`). The value is passed verbatim as `Category[]`
+to every indexer, including the `/all` fallback. It applies to every search in
+an interactive session and has no in-session editor. Omitting it preserves the
+default requests. The client does not look up categories or filter results by
+category locally. See `jackett-search --help` for all options.
+
+## Examples
+
+```sh
+jackett-search --category TV "Example series"
+jackett-search --category 2000 --json "Example movie"
+jackett-search --interactive --category Movies
+```
 
 ## Documentation
 

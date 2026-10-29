@@ -8,6 +8,7 @@ Usage:
   jackett-search --json "<query>"
   jackett-search --magnets-only "<query>"
   jackett-search --torrent-only "<query>"
+  jackett-search --indexer 1337x,yts "<query>"
   jackett-search --timeout 30 "<query>"        # 30 s per indexer
   jackett-search --timeout 0  "<query>"        # no timeout (wait forever)
   jackett-search --sort seeders "<query>"              # default
@@ -255,6 +256,17 @@ def deduplicate_results(results):
 DEFAULT_TIMEOUT = 10  # seconds per indexer; 0 = wait forever
 
 
+def parse_indexers(value):
+    """Parse configured indexer IDs, retaining their first-occurrence order."""
+    indexers = [component.strip() for component in value.split(",")]
+    if not all(indexers):
+        raise argparse.ArgumentTypeError(
+            "provide non-empty configured indexer IDs separated by commas "
+            "(e.g. --indexer 1337x,yts); remove empty components."
+        )
+    return list(dict.fromkeys(indexers))
+
+
 def get_indexer_ids(url, api_key):
     """Return list of configured indexer IDs from Jackett."""
     params = urllib.parse.urlencode({"t": "indexers", "configured": "true", "apikey": api_key})
@@ -269,9 +281,12 @@ def get_indexer_ids(url, api_key):
         return []
 
 
-def query_indexer(url, api_key, indexer_id, query, timeout):
+def query_indexer(url, api_key, indexer_id, query, timeout, category=None):
     """Query a single indexer; return its results list (may be empty on error)."""
-    params = urllib.parse.urlencode({"apikey": api_key, "Query": query})
+    parameters = {"apikey": api_key, "Query": query}
+    if category is not None:
+        parameters["Category[]"] = category
+    params = urllib.parse.urlencode(parameters)
     endpoint = f"{url}/api/v2.0/indexers/{indexer_id}/results?{params}"
     sock_timeout = timeout if timeout > 0 else None  # None = wait forever
     try:
@@ -293,10 +308,25 @@ def search(
     sort=DEFAULT_SORT,
     quiet=False,
     progress_callback=None,
+    category=None,
+    indexers=None,
 ):
 
     indexer_ids = get_indexer_ids(url, api_key)
-    if not indexer_ids:
+    if indexers is not None:
+        if not indexer_ids:
+            raise ValueError(
+                "Cannot validate --indexer: could not fetch configured indexers. "
+                "Check the Jackett connection and configuration; no torrent search was issued."
+            )
+        unknown = [indexer for indexer in indexers if indexer not in indexer_ids]
+        if unknown:
+            raise ValueError(
+                f"Unknown configured indexer ID(s) for --indexer: {', '.join(unknown)}. "
+                "Use IDs from the configured indexers in Jackett; no torrent search was issued."
+            )
+        indexer_ids = indexers
+    elif not indexer_ids:
         if not quiet:
             print(
                 "Warning: could not fetch indexer list; falling back to /all",
@@ -317,7 +347,7 @@ def search(
         progress_callback(completed_indexers, len(indexer_ids))
     with ThreadPoolExecutor(max_workers=len(indexer_ids)) as pool:
         futures = {
-            pool.submit(query_indexer, url, api_key, iid, query, timeout): index
+            pool.submit(query_indexer, url, api_key, iid, query, timeout, category): index
             for index, iid in enumerate(indexer_ids)
         }
         for future in as_completed(futures):
@@ -606,7 +636,21 @@ Examples:
         help="Only show results that have a .torrent download link",
     )
 
+    parser.add_argument(
+        "--category",
+        metavar="VALUE",
+        help="Non-empty Jackett category name or ID, passed verbatim as Category[] "
+        "for every indexer and every interactive search in this session",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Max number of results to show")
+    parser.add_argument(
+        "--indexer",
+        dest="indexers",
+        type=parse_indexers,
+        metavar="IDS",
+        help="Comma-separated configured indexer IDs (e.g. 1337x,yts). "
+        "Limit every search in an interactive session to these IDs too.",
+    )
     parser.add_argument(
         "--magnet",
         type=int,
@@ -632,6 +676,8 @@ Examples:
         "See below for valid field names.",
     )
     args = parser.parse_args()
+    if args.category is not None and not args.category.strip():
+        parser.error("--category requires a non-empty value.")
 
     if args.clear_history:
         search_arguments = (
@@ -642,7 +688,9 @@ Examples:
             args.magnet,
             args.magnets_only,
             args.torrent_only,
+            args.category is not None,
             args.limit is not None,
+            args.indexers is not None,
             args.timeout != DEFAULT_TIMEOUT,
             args.sort != DEFAULT_SORT,
         )
@@ -664,7 +712,9 @@ Examples:
                 args.magnet is not None,
                 args.magnets_only,
                 args.torrent_only,
+                args.category is not None,
                 args.limit is not None,
+                args.indexers is not None,
                 args.timeout != DEFAULT_TIMEOUT,
                 args.sort != DEFAULT_SORT,
             )
@@ -756,6 +806,7 @@ Examples:
             limit=args.limit,
             timeout=args.timeout,
             result_filter=result_filter,
+            category=args.category,
         )
 
         def interactive_search(params, progress_callback=None):
@@ -770,6 +821,8 @@ Examples:
                 sort=params.sort,
                 quiet=True,
                 progress_callback=progress_callback,
+                category=params.category,
+                indexers=args.indexers,
             )
 
         try:
@@ -784,16 +837,21 @@ Examples:
             sys.exit(2)
         return
 
-    results = search(
-        args.query,
-        url,
-        api_key,
-        limit=args.limit,
-        magnets_only=args.magnets_only,
-        torrent_only=args.torrent_only,
-        timeout=args.timeout,
-        sort=args.sort,
-    )
+    try:
+        results = search(
+            args.query,
+            url,
+            api_key,
+            limit=args.limit,
+            magnets_only=args.magnets_only,
+            torrent_only=args.torrent_only,
+            timeout=args.timeout,
+            sort=args.sort,
+            category=args.category,
+            indexers=args.indexers,
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     if args.magnet:
         idx = args.magnet - 1

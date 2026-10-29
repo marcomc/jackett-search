@@ -33,6 +33,10 @@ All ANSI colour and links are automatically stripped when output is piped.
 ```text
 jackett-search [OPTIONS] "query"
 
+Indexers:
+  --indexer IDS         Comma-separated configured Jackett indexer IDs
+                        (default: all configured indexers)
+
 Filter:
   --magnets-only        Only show results with a magnet URI
   --torrent-only        Only show results with a .torrent download link
@@ -53,6 +57,19 @@ Timing:
   --timeout SECS        Per-indexer socket timeout in seconds (default: 10)
                         Use 0 to wait for every indexer regardless of how long it takes
 ```
+
+### Selected indexers
+
+`--indexer` accepts one comma-separated list of configured Jackett indexer IDs,
+such as `1337x,yts`. IDs must exactly match those returned by Jackett's
+configured-indexer discovery. Surrounding whitespace is trimmed and duplicate
+IDs are removed while preserving selection order; each selected indexer is
+queried once in parallel.
+
+An empty value or component (for example, `--indexer "yts,"`) is an argument
+error. Unknown IDs or unavailable configured-indexer discovery fail before any
+torrent search, without falling back to `/all`. Without `--indexer`, searches
+use all configured indexers and retain the `/all` fallback if discovery fails.
 
 ### Sort fields
 
@@ -79,6 +96,13 @@ jackett-search "<placeholder>"
 
 # limit to 20 results
 jackett-search --limit 20 "<placeholder>"
+
+# search one configured indexer, or a selected subset
+jackett-search --indexer yts "<placeholder>"
+jackett-search --indexer 1337x,yts "<placeholder>"
+
+# whitespace is trimmed and yts is queried only once
+jackett-search --indexer " yts,1337x,yts " "<placeholder>"
 
 # only results with a magnet URI
 jackett-search --magnets-only "<placeholder>"
@@ -147,8 +171,14 @@ retains the filter used for that search.
 CLI search flags provide initial values when a query is supplied:
 
 ```sh
-jackett-search --interactive --magnets-only --sort "dlf,seeders" --limit 30 "<placeholder>"
+jackett-search --interactive --indexer 1337x,yts --magnets-only --sort "dlf,seeders" --limit 30 "<placeholder>"
 ```
+
+The `--indexer` selection applies to every search in this session, including
+new queries, refreshes, and searches restored from history. It also applies when
+starting in the form with `jackett-search --interactive --indexer 1337x,yts`.
+The form has no indexer control; restart with a different selection to change
+it. Replace `<placeholder>` with your query and use IDs configured in Jackett.
 
 ### Navigation
 
@@ -203,7 +233,8 @@ terminal and redraws when the terminal is resized.
 
 While configured indexers are being discovered, the TUI displays a spinner.
 Once discovery completes, its progress bar shows completed indexer requests out
-of the actual configured total, including the number still outstanding. An
+of the selected total when `--indexer` is supplied, or the configured total
+otherwise, including the number still outstanding. An
 indexer that fails or reaches its timeout counts as complete because its request
 has finished; this is request completion, not an estimate of result quality.
 
