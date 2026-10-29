@@ -9,6 +9,7 @@ put.io and Bitport.io.
 
 - [Overview](#overview)
 - [Usage](#usage)
+- [Examples](#examples)
 - [Documentation](#documentation)
 - [License](#license)
 
@@ -30,6 +31,21 @@ or Home/End. Press `/` again to edit, Esc to undo the edit, or Ctrl-U to clear
 the filter. Filtering is case-insensitive literal text and makes no new
 Jackett requests. See [interactive navigation](docs/usage.md#navigation) for
 all keys.
+
+Use `--category VALUE` with one non-empty Jackett category name or ID (for
+example, `TV`, `Movies`, or `2000`). The value is passed verbatim as `Category[]`
+to every indexer, including the `/all` fallback. It applies to every search in
+an interactive session and has no in-session editor. Omitting it preserves the
+default requests. The client does not look up categories or filter results by
+category locally. See `jackett-search --help` for all options.
+
+## Examples
+
+```sh
+jackett-search --category TV "Example series"
+jackett-search --category 2000 --json "Example movie"
+jackett-search --interactive --category Movies
+```
 
 ## Documentation
 

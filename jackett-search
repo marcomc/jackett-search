@@ -244,9 +244,12 @@ def get_indexer_ids(url, api_key):
         return []
 
 
-def query_indexer(url, api_key, indexer_id, query, timeout):
+def query_indexer(url, api_key, indexer_id, query, timeout, category=None):
     """Query a single indexer; return its results list (may be empty on error)."""
-    params = urllib.parse.urlencode({"apikey": api_key, "Query": query})
+    parameters = {"apikey": api_key, "Query": query}
+    if category is not None:
+        parameters["Category[]"] = category
+    params = urllib.parse.urlencode(parameters)
     endpoint = f"{url}/api/v2.0/indexers/{indexer_id}/results?{params}"
     sock_timeout = timeout if timeout > 0 else None  # None = wait forever
     try:
@@ -268,6 +271,7 @@ def search(
     sort=DEFAULT_SORT,
     quiet=False,
     progress_callback=None,
+    category=None,
 ):
 
     indexer_ids = get_indexer_ids(url, api_key)
@@ -292,7 +296,7 @@ def search(
         progress_callback(completed_indexers, len(indexer_ids))
     with ThreadPoolExecutor(max_workers=len(indexer_ids)) as pool:
         futures = {
-            pool.submit(query_indexer, url, api_key, iid, query, timeout): iid
+            pool.submit(query_indexer, url, api_key, iid, query, timeout, category): iid
             for iid in indexer_ids
         }
         for future in as_completed(futures):
@@ -573,6 +577,12 @@ Examples:
         help="Only show results that have a .torrent download link",
     )
 
+    parser.add_argument(
+        "--category",
+        metavar="VALUE",
+        help="Non-empty Jackett category name or ID, passed verbatim as Category[] "
+        "for every indexer and every interactive search in this session",
+    )
     parser.add_argument("--limit", type=int, default=None, help="Max number of results to show")
     parser.add_argument(
         "--magnet",
@@ -599,6 +609,8 @@ Examples:
         "See below for valid field names.",
     )
     args = parser.parse_args()
+    if args.category is not None and not args.category.strip():
+        parser.error("--category requires a non-empty value.")
 
     if args.clear_history:
         search_arguments = (
@@ -609,6 +621,7 @@ Examples:
             args.magnet,
             args.magnets_only,
             args.torrent_only,
+            args.category is not None,
             args.limit is not None,
             args.timeout != DEFAULT_TIMEOUT,
             args.sort != DEFAULT_SORT,
@@ -631,6 +644,7 @@ Examples:
                 args.magnet is not None,
                 args.magnets_only,
                 args.torrent_only,
+                args.category is not None,
                 args.limit is not None,
                 args.timeout != DEFAULT_TIMEOUT,
                 args.sort != DEFAULT_SORT,
@@ -723,6 +737,7 @@ Examples:
             limit=args.limit,
             timeout=args.timeout,
             result_filter=result_filter,
+            category=args.category,
         )
 
         def interactive_search(params, progress_callback=None):
@@ -737,6 +752,7 @@ Examples:
                 sort=params.sort,
                 quiet=True,
                 progress_callback=progress_callback,
+                category=params.category,
             )
 
         try:
@@ -760,6 +776,7 @@ Examples:
         torrent_only=args.torrent_only,
         timeout=args.timeout,
         sort=args.sort,
+        category=args.category,
     )
 
     if args.magnet:

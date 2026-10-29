@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Add `--category VALUE` to pass one non-empty Jackett category name or ID
+  verbatim as `Category[]` to every indexer, including the `/all` fallback,
+  and retain it across searches in an interactive session without an editor.
+  [Portfolio issue #398](https://github.com/marcomc/portfolio-ops/issues/398).
+  <!-- portfolio:id=0c142638-7203-4e4e-b82f-90ddb7375f01 -->
+
 ## [0.5.0] - 2026-10-11 - Interactive result filtering
 
 ### Added

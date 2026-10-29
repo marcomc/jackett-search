@@ -127,13 +127,14 @@ def adjust_numeric_value(value: str, delta: int) -> str:
 
 @dataclass
 class SearchParams:
-    """Search settings that can be edited and persisted by the interactive form."""
+    """Search settings, including a session-only category without a form editor."""
 
     query: str = ""
     sort: str = "seeders"
     limit: Optional[int] = None
     timeout: int = 10
     result_filter: str = "magnets"
+    category: Optional[str] = None
 
     def to_history(self) -> Dict[str, Any]:
         return {
@@ -1526,6 +1527,7 @@ class InteractiveSession:
                     limit,
                     timeout,
                     values["Filter"],
+                    category=self.params.category,
                 )
                 self._perform_search(record=True)
                 return True
