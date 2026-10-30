@@ -7,17 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Add `--category VALUE` to pass one non-empty Jackett category name or ID
-  verbatim as `Category[]` to every indexer, including the `/all` fallback,
-  and retain it across searches in an interactive session without an editor.
-  [Portfolio issue #398](https://github.com/marcomc/portfolio-ops/issues/398).
-  <!-- portfolio:id=0c142638-7203-4e4e-b82f-90ddb7375f01 -->
-- Add `--indexer 1337x,yts` to limit CLI searches and every interactive search
-  to selected configured Jackett indexers, with validation before searching.
-  [Portfolio issue #399](https://github.com/marcomc/portfolio-ops/issues/399).
-  <!-- portfolio:id=f6cc5259-9752-4797-8b1b-448e7e612b7f -->
+## [0.6.0] - 2026-10-30
 
 ### Changed
 
@@ -27,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so response timing does not change the representative or tracker list.
   [Portfolio issue #396](https://github.com/marcomc/portfolio-ops/issues/396).
   <!-- portfolio:id=bdc90fc9-49f4-486f-a5cd-7a4732481296 -->
+
+### Added
+
+- Add `--indexer 1337x,yts` to limit CLI searches and every interactive search
+  to selected configured Jackett indexers, with validation before searching.
+  [Portfolio issue #399](https://github.com/marcomc/portfolio-ops/issues/399).
+  <!-- portfolio:id=f6cc5259-9752-4797-8b1b-448e7e612b7f -->
+- Add `--category VALUE` to pass one non-empty Jackett category name or ID
+  verbatim as `Category[]` to every indexer, including the `/all` fallback,
+  and retain it across searches in an interactive session without an editor.
+  [Portfolio issue #398](https://github.com/marcomc/portfolio-ops/issues/398).
+  <!-- portfolio:id=0c142638-7203-4e4e-b82f-90ddb7375f01 -->
 
 ## [0.5.0] - 2026-10-11 - Interactive result filtering
 

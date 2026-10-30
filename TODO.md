@@ -4,10 +4,6 @@ Planned improvements, roughly prioritised.
 
 ## High priority
 
-- [ ] **`--category` filter** — accept a Jackett category string or ID
-  (e.g. `TV`, `Movies`, `2000`) and pass it as the `Category[]` query
-  parameter to each indexer.
-
 ## Medium priority
 
 - [ ] **`--open` flag** — pipe the selected magnet URI to `open` (macOS) /
