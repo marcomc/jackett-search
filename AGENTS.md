@@ -55,6 +55,9 @@ The `.gitignore` already excludes `config.toml` and `*.local`.
 - Column padding must use the pre-pad-then-colour pattern (pad visible text
   first, then wrap in ANSI) to avoid misalignment.  See `colour_seeds()` and
   `colour_dlf()` for the canonical example.
+- For concurrent indexer searches, preserve configured indexer order before
+  sorting or deduplicating. Never let asynchronous completion order become the
+  implicit tie-breaker for equal sort keys or duplicate representatives.
 
 ## Interactive terminal UI and installation
 
