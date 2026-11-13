@@ -1794,6 +1794,51 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertTrue(any("magnet:?xt=urn:btih:example" in text for text in rendered))
             self.assertTrue(any("Esc close" in text for text in rendered))
 
+    def test_info_panel_honors_ctrl_x_and_stays_open_when_exit_is_cancelled(self):
+        class FakeScreen:
+            def __init__(self, keys):
+                self.calls = []
+                self.keys = iter(keys)
+
+            def getmaxyx(self):
+                return 24, 100
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *arguments):
+                self.calls.append(arguments)
+
+            def refresh(self):
+                pass
+
+            def getch(self):
+                return next(self.keys)
+
+        fake_curses = SimpleNamespace(A_BOLD=1, A_DIM=2, error=RuntimeError)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.curses = fake_curses
+            session.results = [{"Title": "Example release"}]
+
+            session.screen = FakeScreen((interactive.CTRL_X, 27))
+            session._confirm_exit = mock.Mock(return_value=False)
+            session._show_result_info()
+            session._confirm_exit.assert_called_once_with()
+            self.assertGreaterEqual(len(session.screen.calls), 4)
+
+            session.screen = FakeScreen((interactive.CTRL_X,))
+            session._confirm_exit = mock.Mock(return_value=True)
+            with self.assertRaises(interactive.ExitInteractiveMode):
+                session._show_result_info()
+            session._confirm_exit.assert_called_once_with()
+
     def test_result_table_keeps_url_actions_visible_at_minimum_width(self):
         class FakeScreen:
             def __init__(self):

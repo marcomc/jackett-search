@@ -1335,7 +1335,10 @@ class InteractiveSession:
                 row += 1
             self._add(height - 1, 0, "Esc close", self.curses.A_DIM)
             self.screen.refresh()
-            if self.screen.getch() == 27:
+            key = self.screen.getch()
+            if key == CTRL_X:
+                self._request_exit()
+            elif key == 27:
                 return
 
     def _draw_loading(
