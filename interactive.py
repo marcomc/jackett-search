@@ -753,6 +753,8 @@ class InteractiveSession:
                 self._perform_search(record=True)
             elif key == ord("/"):
                 self._edit_result_filter()
+            elif key == ord("i") and self._visible_result_indices():
+                self._show_result_info()
             elif key == 21 and self.result_filter_text:
                 self._set_result_filter("")
             elif self._navigate_results(key):
@@ -1284,6 +1286,61 @@ class InteractiveSession:
         title = str(self.results[self.cursor_index].get("Title") or "Untitled")
         return f"Selected: {_truncate(title, 70)} — Focus: {self.focused_action.title()} URL"
 
+    def _show_result_info(self) -> None:
+        """Show the selected result's available Jackett fields until Esc."""
+        if not self._visible_result_indices():
+            return
+        result = self.results[self.cursor_index]
+        fields = (
+            ("Title", "Title"),
+            ("Trackers", "Trackers"),
+            ("Tracker", "Tracker"),
+            ("Category", "CategoryDesc"),
+            ("Published", "PublishDate"),
+            ("Size", "Size"),
+            ("Seeders", "Seeders"),
+            ("Peers", "Peers"),
+            ("Grabs", "Grabs"),
+            ("Files", "Files"),
+            ("Download factor", "DownloadVolumeFactor"),
+            ("Info hash", "InfoHash"),
+            ("Details URL", "Details"),
+            ("Torrent URL", "Link"),
+            ("Magnet URI", "MagnetUri"),
+        )
+        values = []
+        for label, key in fields:
+            value = result.get(key)
+            if value is None or value == "" or value == []:
+                continue
+            if key == "Size":
+                value = f"{value} bytes ({self._format_size(value)})"
+            elif isinstance(value, (list, tuple)):
+                value = ", ".join(str(item) for item in value)
+            values.append((label, str(value)))
+
+        while True:
+            self._clear()
+            height, width = self.screen.getmaxyx()
+            self._add(0, 0, "Selected result information", self.curses.A_BOLD)
+            self._add(1, 0, "─" * (width - 1), self.curses.A_DIM)
+            row = 3
+            label_width = min(18, max((len(label) for label, _ in values), default=0))
+            for label, value in values:
+                if row >= height - 2:
+                    self._add(row, 0, "… more fields omitted", self.curses.A_DIM)
+                    break
+                rendered = _truncate(value, width - label_width - 4)
+                self._add(row, 0, f"{label:<{label_width}}  {rendered}")
+                row += 1
+            self._add(height - 1, 0, "Esc close", self.curses.A_DIM)
+            self.screen.refresh()
+            key = self.screen.getch()
+            if key == CTRL_X:
+                self._request_exit()
+            elif key == 27:
+                return
+
     def _draw_loading(
         self,
         message: str,
@@ -1652,6 +1709,7 @@ class InteractiveSession:
         lines = [
             "Navigation",
             "  ↑/↓ or j/k       Select result",
+            "  i                 Show selected result information; Esc closes it",
             "  ←/→ or h/l       Select Magnet/Torrent",
             "  PgUp/PgDn; Home/End or g/G   Page; first/last result",
             "  Ctrl-U clear active filter / half-page up; Ctrl-D half-page down",
