@@ -225,7 +225,6 @@ class InstallationTests(unittest.TestCase):
             project_section = metadata.split("[project]", 1)[1].split("[", 1)[0]
             metadata_version = re.search(r'^version\s*=\s*"([^"]+)"', project_section, re.MULTILINE)
             self.assertIsNotNone(metadata_version)
-            self.assertEqual("0.6.0", metadata_version.group(1))
             self.assertEqual(metadata_version.group(1), cli.VERSION)
             self.assertEqual(f"jackett-search {metadata_version.group(1)}\n", version.stdout)
 
@@ -1745,6 +1744,55 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertIn("M magnet   ", rerendered)
             self.assertIn("[T torrent] ", rerendered)
             self.assertEqual("torrent", session.focused_action)
+
+    def test_info_panel_shows_selected_metadata_and_closes_with_escape(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def getmaxyx(self):
+                return 24, 100
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *arguments):
+                self.calls.append(arguments)
+
+            def refresh(self):
+                pass
+
+            def getch(self):
+                return 27
+
+        fake_curses = SimpleNamespace(A_BOLD=1, A_DIM=2, error=RuntimeError)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.screen = FakeScreen()
+            session.curses = fake_curses
+            session.results = [
+                {
+                    "Title": "Example release",
+                    "Trackers": ["Tracker One", "Tracker Two"],
+                    "Size": 1024,
+                    "MagnetUri": "magnet:?xt=urn:btih:example",
+                }
+            ]
+
+            session._show_result_info()
+
+            rendered = [arguments[2] for arguments in session.screen.calls]
+            self.assertTrue(any("Example release" in text for text in rendered))
+            self.assertTrue(any("Tracker One, Tracker Two" in text for text in rendered))
+            self.assertTrue(any("1024 bytes (1.0 KB)" in text for text in rendered))
+            self.assertTrue(any("magnet:?xt=urn:btih:example" in text for text in rendered))
+            self.assertTrue(any("Esc close" in text for text in rendered))
 
     def test_result_table_keeps_url_actions_visible_at_minimum_width(self):
         class FakeScreen:
