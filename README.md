@@ -39,8 +39,7 @@ type. Press Enter to keep the filter and navigate with arrows, PageUp/PageDown,
 or Home/End. Press `/` again to edit, Esc to undo the edit, or Ctrl-U to clear
 the filter. Filtering is case-insensitive literal text and makes no new
 Jackett requests. Results with the same non-empty info hash are combined after
-sorting, with contributing indexers shown in the tracker column. Press `i` on
-a selected result to open its information panel, then `Esc` to close it. See
+sorting, with contributing indexers shown in the tracker column. See
 [interactive navigation](docs/usage.md#navigation) for all keys and
 [JSON output fields](docs/usage.md#json-output-fields) for output details.
 
