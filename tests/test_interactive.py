@@ -1745,6 +1745,48 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertIn("[T torrent] ", rerendered)
             self.assertEqual("torrent", session.focused_action)
 
+    def test_results_legend_shows_info_shortcut_at_minimum_width(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+
+            def getmaxyx(self):
+                return 24, interactive.MIN_WIDTH
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *arguments):
+                self.calls.append(arguments)
+
+            def refresh(self):
+                pass
+
+        fake_curses = SimpleNamespace(
+            A_BOLD=1,
+            A_DIM=2,
+            A_REVERSE=4,
+            A_UNDERLINE=8,
+            curs_set=mock.Mock(),
+            error=RuntimeError,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.screen = FakeScreen()
+            session.curses = fake_curses
+            session.results = [{"Title": "Example result"}]
+
+            session._draw_results()
+
+            legend = next(arguments[2] for arguments in session.screen.calls if arguments[0] == 22)
+            self.assertIn("i info", legend)
+
     def test_info_panel_shows_selected_metadata_and_closes_with_escape(self):
         class FakeScreen:
             def __init__(self):
@@ -1792,7 +1834,48 @@ class InteractiveStateTests(unittest.TestCase):
             self.assertTrue(any("Tracker One, Tracker Two" in text for text in rendered))
             self.assertTrue(any("1024 bytes (1.0 KB)" in text for text in rendered))
             self.assertTrue(any("magnet:?xt=urn:btih:example" in text for text in rendered))
-            self.assertTrue(any("Esc close" in text for text in rendered))
+            self.assertTrue(any("Esc or i close" in text for text in rendered))
+
+    def test_info_panel_closes_when_i_is_pressed_again(self):
+        class FakeScreen:
+            def __init__(self):
+                self.calls = []
+                self.read_count = 0
+
+            def getmaxyx(self):
+                return 24, 100
+
+            def erase(self):
+                pass
+
+            def addnstr(self, *arguments):
+                self.calls.append(arguments)
+
+            def refresh(self):
+                pass
+
+            def getch(self):
+                self.read_count += 1
+                return ord("i")
+
+        fake_curses = SimpleNamespace(A_BOLD=1, A_DIM=2, error=RuntimeError)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "config.toml"
+            config_path.write_text('api_key = "test-key"\n', encoding="utf-8")
+            session = interactive.InteractiveSession(
+                interactive.SearchParams("Example"),
+                lambda _params: [],
+                config_path,
+            )
+            session.screen = FakeScreen()
+            session.curses = fake_curses
+            session.results = [{"Title": "Example result"}]
+
+            session._show_result_info()
+
+            rendered = [arguments[2] for arguments in session.screen.calls]
+            self.assertEqual(1, session.screen.read_count)
+            self.assertTrue(any("Esc or i close" in text for text in rendered))
 
     def test_info_panel_honors_ctrl_x_and_stays_open_when_exit_is_cancelled(self):
         class FakeScreen:
