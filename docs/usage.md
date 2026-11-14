@@ -190,6 +190,7 @@ immediately. Cancelling either confirmation keeps the current search unchanged.
 | Key | Action |
 | --- | --- |
 | `↑`/`↓`, `j`/`k` | Move between result rows |
+| `i` | Show information for the selected result; press `Esc` to close |
 | `←`/`→`, `h`/`l` | Focus the Magnet or Torrent action |
 | `PageUp`/`PageDown` | Move one page |
 | `Home`/`End`, `g`/`G` | Jump to the first or last row |
