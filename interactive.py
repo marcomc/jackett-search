@@ -1262,7 +1262,7 @@ class InteractiveSession:
             self._add(
                 height - 2,
                 0,
-                "n new  Esc return  r refresh  / filter  Ctrl-U clear  ? help  q quit  Ctrl-X exit",
+                "i info n new Esc back r refresh / filter Ctrl-U clear ? help q quit Ctrl-X exit",
                 self.curses.A_DIM,
             )
             status = self.status or self._selected_summary()
@@ -1287,7 +1287,7 @@ class InteractiveSession:
         return f"Selected: {_truncate(title, 70)} — Focus: {self.focused_action.title()} URL"
 
     def _show_result_info(self) -> None:
-        """Show the selected result's available Jackett fields until Esc."""
+        """Show selected result fields until Esc or ``i`` closes the panel."""
         if not self._visible_result_indices():
             return
         result = self.results[self.cursor_index]
@@ -1333,12 +1333,12 @@ class InteractiveSession:
                 rendered = _truncate(value, width - label_width - 4)
                 self._add(row, 0, f"{label:<{label_width}}  {rendered}")
                 row += 1
-            self._add(height - 1, 0, "Esc close", self.curses.A_DIM)
+            self._add(height - 1, 0, "Esc or i close", self.curses.A_DIM)
             self.screen.refresh()
             key = self.screen.getch()
             if key == CTRL_X:
                 self._request_exit()
-            elif key == 27:
+            elif key in (27, ord("i")):
                 return
 
     def _draw_loading(
@@ -1709,7 +1709,7 @@ class InteractiveSession:
         lines = [
             "Navigation",
             "  ↑/↓ or j/k       Select result",
-            "  i                 Show selected result information; Esc closes it",
+            "  i                 Show/close result info; Esc also closes",
             "  ←/→ or h/l       Select Magnet/Torrent",
             "  PgUp/PgDn; Home/End or g/G   Page; first/last result",
             "  Ctrl-U clear active filter / half-page up; Ctrl-D half-page down",
