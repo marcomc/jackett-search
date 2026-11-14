@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-13
+
+### Added
+
+- Add `i` in the interactive results view to show the selected result's
+  available metadata; press `Esc` to close the information panel.
+
 ## [0.6.0] - 2026-10-30
 
 ### Changed
